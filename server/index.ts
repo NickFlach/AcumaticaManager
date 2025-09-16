@@ -38,6 +38,7 @@ if (process.env.NODE_ENV === 'production') {
   
   // Middleware to enforce secure cookies in production
   app.use((req, res, next) => {
+    const originalCookie = res.cookie.bind(res);
     res.cookie = function(name: string, value: string, options: any = {}) {
       const secureOptions = {
         ...options,
@@ -46,7 +47,7 @@ if (process.env.NODE_ENV === 'production') {
         sameSite: 'strict' as const,
         maxAge: options.maxAge || 24 * 60 * 60 * 1000 // 24 hours default
       };
-      return express.response.cookie.call(this, name, value, secureOptions);
+      return originalCookie(name, value, secureOptions);
     };
     next();
   });

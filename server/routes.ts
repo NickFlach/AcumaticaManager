@@ -1138,11 +1138,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const filters = userListFiltersSchema.parse(req.query);
       const usersResponse = await storage.getUsersWithFilters(filters);
       
-      // Convert user data to public format
-      const safeUsersResponse = {
-        ...usersResponse,
-        users: usersResponse.users.map(user => toPublicUser(user))
-      };
+      // Users are already in safe public format from storage layer
+      const safeUsersResponse = usersResponse;
 
       res.json(safeUsersResponse);
     } catch (error) {
