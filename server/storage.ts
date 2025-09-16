@@ -281,6 +281,7 @@ export class MemStorage implements IStorage {
       hourlyRate: "85",
       totalAmount: "552.50",
       isApproved: false,
+      approvedBy: null,
       acumaticaId: "TIME-002",
       lumberTimeId: "LT-002",
       createdAt: new Date(),
@@ -298,8 +299,12 @@ export class MemStorage implements IStorage {
       status: "open",
       priority: "medium",
       submittedBy: adminUserId,
+      assignedTo: null,
       submittedDate: "2024-02-05",
       requiredDate: "2024-02-12",
+      answeredDate: null,
+      answer: null,
+      attachments: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -315,8 +320,12 @@ export class MemStorage implements IStorage {
       status: "pending",
       priority: "high",
       submittedBy: adminUserId,
+      assignedTo: null,
       submittedDate: "2024-02-10",
       requiredDate: "2024-02-17",
+      answeredDate: null,
+      answer: null,
+      attachments: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -338,7 +347,9 @@ export class MemStorage implements IStorage {
       timeImpact: 5,
       submittedDate: "2024-01-25",
       approvedDate: "2024-01-30",
+      implementedDate: null,
       justification: "Safety requirement identified during initial assessment",
+      attachments: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -396,6 +407,8 @@ export class MemStorage implements IStorage {
       recordsProcessed: 25,
       recordsSuccessful: 23,
       recordsFailed: 2,
+      errorMessage: null,
+      syncData: null,
       startedAt: new Date(Date.now() - 6 * 60 * 60 * 1000), // 6 hours ago
       completedAt: new Date(Date.now() - 6 * 60 * 60 * 1000 + 5 * 60 * 1000), // 5 minutes later
     };
@@ -413,7 +426,12 @@ export class MemStorage implements IStorage {
 
   async createUser(insertUser: InsertUser): Promise<User> {
     const id = randomUUID();
-    const user: User = { ...insertUser, id, createdAt: new Date() };
+    const user: User = { 
+      ...insertUser, 
+      id, 
+      createdAt: new Date(),
+      role: insertUser.role ?? "user"
+    };
     this.users.set(id, user);
     return user;
   }
@@ -434,6 +452,19 @@ export class MemStorage implements IStorage {
       id,
       createdAt: new Date(),
       updatedAt: new Date(),
+      status: insertProject.status ?? "active",
+      health: insertProject.health ?? "on-track",
+      progress: insertProject.progress ?? "0",
+      actualAmount: insertProject.actualAmount ?? "0",
+      description: insertProject.description ?? null,
+      clientId: insertProject.clientId ?? null,
+      clientContact: insertProject.clientContact ?? null,
+      budgetAmount: insertProject.budgetAmount ?? null,
+      startDate: insertProject.startDate ?? null,
+      endDate: insertProject.endDate ?? null,
+      dueDate: insertProject.dueDate ?? null,
+      projectType: insertProject.projectType ?? null,
+      acumaticaId: insertProject.acumaticaId ?? null
     };
     this.projects.set(id, project);
     return project;
@@ -476,6 +507,22 @@ export class MemStorage implements IStorage {
       id,
       createdAt: new Date(),
       updatedAt: new Date(),
+      status: insertTask.status ?? "not-started",
+      priority: insertTask.priority ?? "medium",
+      progress: insertTask.progress ?? "0",
+      actualHours: insertTask.actualHours ?? "0",
+      actualAmount: insertTask.actualAmount ?? "0",
+      level: insertTask.level ?? 1,
+      sortOrder: insertTask.sortOrder ?? 0,
+      description: insertTask.description ?? null,
+      parentTaskId: insertTask.parentTaskId ?? null,
+      estimatedHours: insertTask.estimatedHours ?? null,
+      budgetAmount: insertTask.budgetAmount ?? null,
+      startDate: insertTask.startDate ?? null,
+      endDate: insertTask.endDate ?? null,
+      dueDate: insertTask.dueDate ?? null,
+      assignedTo: insertTask.assignedTo ?? null,
+      taskCode: insertTask.taskCode ?? null
     };
     this.tasks.set(id, task);
     return task;
@@ -517,6 +564,14 @@ export class MemStorage implements IStorage {
       ...insertTimeEntry,
       id,
       createdAt: new Date(),
+      isApproved: insertTimeEntry.isApproved ?? false,
+      description: insertTimeEntry.description ?? null,
+      taskId: insertTimeEntry.taskId ?? null,
+      hourlyRate: insertTimeEntry.hourlyRate ?? null,
+      totalAmount: insertTimeEntry.totalAmount ?? null,
+      approvedBy: insertTimeEntry.approvedBy ?? null,
+      acumaticaId: insertTimeEntry.acumaticaId ?? null,
+      lumberTimeId: insertTimeEntry.lumberTimeId ?? null
     };
     this.timeEntries.set(id, timeEntry);
     return timeEntry;
@@ -555,6 +610,13 @@ export class MemStorage implements IStorage {
       id,
       createdAt: new Date(),
       updatedAt: new Date(),
+      status: insertRfi.status ?? "open",
+      priority: insertRfi.priority ?? "medium",
+      assignedTo: insertRfi.assignedTo ?? null,
+      requiredDate: insertRfi.requiredDate ?? null,
+      answeredDate: insertRfi.answeredDate ?? null,
+      answer: insertRfi.answer ?? null,
+      attachments: insertRfi.attachments ?? null
     };
     this.rfis.set(id, rfi);
     return rfi;
@@ -597,6 +659,14 @@ export class MemStorage implements IStorage {
       id,
       createdAt: new Date(),
       updatedAt: new Date(),
+      status: insertChangeOrder.status ?? "draft",
+      costImpact: insertChangeOrder.costImpact ?? "0",
+      timeImpact: insertChangeOrder.timeImpact ?? 0,
+      approvedBy: insertChangeOrder.approvedBy ?? null,
+      approvedDate: insertChangeOrder.approvedDate ?? null,
+      implementedDate: insertChangeOrder.implementedDate ?? null,
+      justification: insertChangeOrder.justification ?? null,
+      attachments: insertChangeOrder.attachments ?? null
     };
     this.changeOrders.set(id, changeOrder);
     return changeOrder;
@@ -639,6 +709,11 @@ export class MemStorage implements IStorage {
       id,
       createdAt: new Date(),
       updatedAt: new Date(),
+      status: insertRisk.status ?? "open",
+      riskScore: insertRisk.riskScore ?? null,
+      targetDate: insertRisk.targetDate ?? null,
+      mitigationPlan: insertRisk.mitigationPlan ?? null,
+      contingencyPlan: insertRisk.contingencyPlan ?? null
     };
     this.risks.set(id, risk);
     return risk;
@@ -668,7 +743,16 @@ export class MemStorage implements IStorage {
 
   async createAcumaticaSync(insertSync: InsertAcumaticaSync): Promise<AcumaticaSync> {
     const id = randomUUID();
-    const sync: AcumaticaSync = { ...insertSync, id };
+    const sync: AcumaticaSync = { 
+      ...insertSync, 
+      id,
+      recordsProcessed: insertSync.recordsProcessed ?? 0,
+      recordsSuccessful: insertSync.recordsSuccessful ?? 0,
+      recordsFailed: insertSync.recordsFailed ?? 0,
+      errorMessage: insertSync.errorMessage ?? null,
+      syncData: insertSync.syncData ?? null,
+      completedAt: insertSync.completedAt ?? null
+    };
     this.acumaticaSyncs.set(id, sync);
     return sync;
   }
