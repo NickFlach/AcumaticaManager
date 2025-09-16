@@ -16,8 +16,10 @@ export interface IStorage {
   // Token Management
   setPasswordResetToken(userId: string, token: string, expires: Date): Promise<boolean>;
   clearPasswordResetToken(userId: string): Promise<boolean>;
+  getUserByPasswordResetToken(token: string): Promise<User | undefined>;
   setEmailVerificationToken(userId: string, token: string): Promise<boolean>;
   clearEmailVerificationToken(userId: string): Promise<boolean>;
+  getUserByEmailVerificationToken(token: string): Promise<User | undefined>;
   
   // Two-Factor Authentication
   setTwoFactorSecret(userId: string, secret: string): Promise<boolean>;
@@ -584,6 +586,14 @@ export class MemStorage implements IStorage {
     return true;
   }
 
+  async getUserByPasswordResetToken(token: string): Promise<User | undefined> {
+    return Array.from(this.users.values()).find(user => 
+      user.passwordResetToken === token && 
+      user.passwordResetExpires && 
+      user.passwordResetExpires > new Date()
+    );
+  }
+
   async setEmailVerificationToken(userId: string, token: string): Promise<boolean> {
     const user = this.users.get(userId);
     if (!user) return false;
@@ -608,6 +618,12 @@ export class MemStorage implements IStorage {
     };
     this.users.set(userId, updated);
     return true;
+  }
+
+  async getUserByEmailVerificationToken(token: string): Promise<User | undefined> {
+    return Array.from(this.users.values()).find(user => 
+      user.emailVerificationToken === token && !user.emailVerified
+    );
   }
 
   // Two-Factor Authentication

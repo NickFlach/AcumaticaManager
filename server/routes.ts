@@ -1,7 +1,17 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertProjectSchema, insertTaskSchema, insertTimeEntrySchema, insertRfiSchema, insertChangeOrderSchema, insertRiskSchema, insertAcumaticaSyncSchema } from "@shared/schema";
+import { 
+  insertProjectSchema, 
+  insertTaskSchema, 
+  insertTimeEntrySchema, 
+  insertRfiSchema, 
+  insertChangeOrderSchema, 
+  insertRiskSchema, 
+  insertAcumaticaSyncSchema,
+  insertUserSchema,
+  toPublicUser 
+} from "@shared/schema";
 import { z } from "zod";
 import { 
   requireAuth, 
@@ -15,6 +25,31 @@ import {
   roleRequired,
   generalRateLimit
 } from "./auth-middleware";
+import {
+  hashPassword,
+  verifyPassword,
+  generateAccessToken,
+  generateRefreshToken,
+  verifyAccessToken,
+  verifyRefreshToken,
+  generateSessionToken,
+  validateEmail,
+  validatePassword,
+  validateUsername,
+  normalizeEmail,
+  sanitizeInput,
+  loginRateLimit,
+  registerRateLimit,
+  passwordResetRateLimit,
+  emailVerificationRateLimit,
+  sendVerificationEmail,
+  sendPasswordResetEmail,
+  sendWelcomeEmail,
+  sendAccountLockedEmail,
+  generatePasswordResetToken,
+  generateEmailVerificationToken,
+  isTokenExpired
+} from "./auth-utils";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Authentication demonstration routes - showing middleware in action
@@ -50,6 +85,857 @@ export async function registerRoutes(app: Express): Promise<Server> {
       message: "Manager or Admin only endpoint", 
       user: { id: req.user!.id, username: req.user!.username, role: req.user!.role }
     });
+  });
+
+  // =============================================
+  // AUTHENTICATION ROUTES
+  // =============================================
+
+  // Register new user with email verification
+  app.post("/api/auth/register", registerRateLimit, async (req, res) => {
+    try {
+      const { username, email, password, firstName, lastName } = req.body;
+
+      // Input validation
+      if (!username || !email || !password || !firstName || !lastName) {
+        return res.status(400).json({ 
+          error: "All fields are required", 
+          code: "MISSING_FIELDS" 
+        });
+      }
+
+      // Sanitize inputs
+      const sanitizedUsername = sanitizeInput(username);
+      const sanitizedEmail = normalizeEmail(email);
+      const sanitizedFirstName = sanitizeInput(firstName);
+      const sanitizedLastName = sanitizeInput(lastName);
+
+      // Validate username
+      const usernameValidation = validateUsername(sanitizedUsername);
+      if (!usernameValidation.valid) {
+        return res.status(400).json({ 
+          error: "Invalid username", 
+          details: usernameValidation.errors,
+          code: "INVALID_USERNAME"
+        });
+      }
+
+      // Validate email
+      if (!validateEmail(sanitizedEmail)) {
+        return res.status(400).json({ 
+          error: "Invalid email format", 
+          code: "INVALID_EMAIL" 
+        });
+      }
+
+      // Validate password
+      const passwordValidation = validatePassword(password);
+      if (!passwordValidation.valid) {
+        return res.status(400).json({ 
+          error: "Invalid password", 
+          details: passwordValidation.errors,
+          code: "INVALID_PASSWORD"
+        });
+      }
+
+      // Check if username already exists
+      const existingUsername = await storage.getUserByUsername(sanitizedUsername);
+      if (existingUsername) {
+        return res.status(409).json({ 
+          error: "Username already exists", 
+          code: "USERNAME_EXISTS" 
+        });
+      }
+
+      // Check if email already exists
+      const existingEmail = await storage.getUserByEmail(sanitizedEmail);
+      if (existingEmail) {
+        return res.status(409).json({ 
+          error: "Email already registered", 
+          code: "EMAIL_EXISTS" 
+        });
+      }
+
+      // Hash password
+      const hashedPassword = await hashPassword(password);
+
+      // Generate email verification token
+      const emailVerificationToken = generateEmailVerificationToken();
+
+      // Create user
+      const userData = {
+        username: sanitizedUsername,
+        hashedPassword,
+        email: sanitizedEmail,
+        firstName: sanitizedFirstName,
+        lastName: sanitizedLastName,
+        emailVerificationToken,
+        role: "user",
+        emailVerified: false,
+        isActive: true,
+        twoFactorEnabled: false,
+        loginAttempts: 0
+      };
+
+      const user = await storage.createUser(userData);
+
+      // Send verification email
+      const emailSent = await sendVerificationEmail(sanitizedEmail, emailVerificationToken);
+      if (!emailSent) {
+        console.warn("Failed to send verification email for user:", user.id);
+      }
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: user.id,
+        action: "user_registration",
+        resourceType: "user",
+        resourceId: user.id,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: { 
+          username: sanitizedUsername, 
+          email: sanitizedEmail,
+          emailSent 
+        }
+      });
+
+      res.status(201).json({
+        message: "User registered successfully. Please check your email to verify your account.",
+        user: toPublicUser(user),
+        emailSent
+      });
+
+    } catch (error) {
+      console.error("Registration error:", error);
+      res.status(500).json({ 
+        error: "Registration failed", 
+        code: "REGISTRATION_ERROR" 
+      });
+    }
+  });
+
+  // User login with rate limiting and account lockout
+  app.post("/api/auth/login", loginRateLimit, async (req, res) => {
+    try {
+      const { username, email, password, rememberMe = false } = req.body;
+
+      if (!password || (!username && !email)) {
+        return res.status(400).json({ 
+          error: "Username/email and password are required", 
+          code: "MISSING_CREDENTIALS" 
+        });
+      }
+
+      // Find user by username or email
+      let user;
+      if (email) {
+        const normalizedEmail = normalizeEmail(email);
+        user = await storage.getUserByEmail(normalizedEmail);
+      } else {
+        const sanitizedUsername = sanitizeInput(username);
+        user = await storage.getUserByUsername(sanitizedUsername);
+      }
+
+      if (!user) {
+        // Add audit log for failed login attempt
+        await storage.addAuditLog({
+          action: "login_failed",
+          resourceType: "auth",
+          ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+          userAgent: req.headers['user-agent'] || "unknown",
+          details: { 
+            reason: "user_not_found", 
+            attempted_username: username,
+            attempted_email: email 
+          },
+          success: false
+        });
+
+        return res.status(401).json({ 
+          error: "Invalid credentials", 
+          code: "INVALID_CREDENTIALS" 
+        });
+      }
+
+      // Check if account is locked
+      if (user.lockedUntil && user.lockedUntil > new Date()) {
+        await storage.addAuditLog({
+          userId: user.id,
+          action: "login_failed_account_locked",
+          resourceType: "auth",
+          resourceId: user.id,
+          ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+          userAgent: req.headers['user-agent'] || "unknown",
+          details: { lockedUntil: user.lockedUntil },
+          success: false
+        });
+
+        return res.status(423).json({ 
+          error: "Account is temporarily locked due to too many failed attempts", 
+          code: "ACCOUNT_LOCKED",
+          lockedUntil: user.lockedUntil
+        });
+      }
+
+      // Check if account is active
+      if (!user.isActive) {
+        await storage.addAuditLog({
+          userId: user.id,
+          action: "login_failed_inactive_account",
+          resourceType: "auth",
+          resourceId: user.id,
+          ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+          userAgent: req.headers['user-agent'] || "unknown",
+          details: {},
+          success: false
+        });
+
+        return res.status(403).json({ 
+          error: "Account is inactive", 
+          code: "ACCOUNT_INACTIVE" 
+        });
+      }
+
+      // Verify password
+      const isPasswordValid = await verifyPassword(password, user.hashedPassword);
+
+      if (!isPasswordValid) {
+        // Increment login attempts
+        const newLoginAttempts = (user.loginAttempts || 0) + 1;
+        const maxAttempts = 5;
+        let lockedUntil: Date | undefined;
+
+        if (newLoginAttempts >= maxAttempts) {
+          lockedUntil = new Date(Date.now() + 30 * 60 * 1000); // Lock for 30 minutes
+          
+          // Send account locked email
+          await sendAccountLockedEmail(user.email, user.firstName, lockedUntil);
+        }
+
+        await storage.updateUserLoginAttempts(user.id, newLoginAttempts, lockedUntil);
+
+        await storage.addAuditLog({
+          userId: user.id,
+          action: "login_failed_invalid_password",
+          resourceType: "auth",
+          resourceId: user.id,
+          ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+          userAgent: req.headers['user-agent'] || "unknown",
+          details: { 
+            loginAttempts: newLoginAttempts,
+            accountLocked: !!lockedUntil
+          },
+          success: false
+        });
+
+        return res.status(401).json({ 
+          error: "Invalid credentials", 
+          code: "INVALID_CREDENTIALS" 
+        });
+      }
+
+      // Reset login attempts on successful login
+      await storage.updateUserLoginAttempts(user.id, 0);
+      await storage.updateUserLastLogin(user.id);
+
+      // Generate tokens
+      const accessToken = generateAccessToken(user.id, user.email);
+      const refreshToken = generateRefreshToken(user.id);
+
+      // Create session if remember me is enabled
+      let session;
+      if (rememberMe) {
+        const sessionToken = generateSessionToken();
+        const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
+
+        session = await storage.createSession({
+          userId: user.id,
+          sessionToken,
+          expiresAt,
+          lastAccessedAt: new Date(),
+          userAgent: req.headers['user-agent'] || "unknown",
+          ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+          isActive: true
+        });
+
+        // Set session cookie
+        res.cookie('sessionToken', sessionToken, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'strict',
+          maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+        });
+      }
+
+      // Add audit log for successful login
+      await storage.addAuditLog({
+        userId: user.id,
+        action: "login_success",
+        resourceType: "auth",
+        resourceId: user.id,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: { 
+          rememberMe,
+          sessionCreated: !!session
+        }
+      });
+
+      res.json({
+        message: "Login successful",
+        user: toPublicUser(user),
+        accessToken,
+        refreshToken,
+        sessionCreated: !!session
+      });
+
+    } catch (error) {
+      console.error("Login error:", error);
+      res.status(500).json({ 
+        error: "Login failed", 
+        code: "LOGIN_ERROR" 
+      });
+    }
+  });
+
+  // User logout (revoke session)
+  app.post("/api/auth/logout", optionalAuth, async (req, res) => {
+    try {
+      let sessionRevoked = false;
+      
+      if (req.session) {
+        await storage.revokeSession(req.session.id);
+        sessionRevoked = true;
+        
+        // Clear session cookie
+        res.clearCookie('sessionToken');
+      }
+
+      if (req.user) {
+        // Add audit log
+        await storage.addAuditLog({
+          userId: req.user.id,
+          action: "logout",
+          resourceType: "auth",
+          resourceId: req.user.id,
+          ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+          userAgent: req.headers['user-agent'] || "unknown",
+          details: { sessionRevoked }
+        });
+      }
+
+      res.json({
+        message: "Logout successful",
+        sessionRevoked
+      });
+
+    } catch (error) {
+      console.error("Logout error:", error);
+      res.status(500).json({ 
+        error: "Logout failed", 
+        code: "LOGOUT_ERROR" 
+      });
+    }
+  });
+
+  // Get current authenticated user
+  app.get("/api/auth/me", ...authRequired, async (req, res) => {
+    try {
+      res.json({
+        user: toPublicUser(req.user!),
+        authMethod: req.authMethod
+      });
+    } catch (error) {
+      console.error("Get current user error:", error);
+      res.status(500).json({ 
+        error: "Failed to get user information", 
+        code: "GET_USER_ERROR" 
+      });
+    }
+  });
+
+  // Refresh JWT access token using refresh token
+  app.post("/api/auth/refresh", async (req, res) => {
+    try {
+      const { refreshToken } = req.body;
+
+      if (!refreshToken) {
+        return res.status(400).json({ 
+          error: "Refresh token is required", 
+          code: "MISSING_REFRESH_TOKEN" 
+        });
+      }
+
+      const tokenPayload = verifyRefreshToken(refreshToken);
+      if (!tokenPayload) {
+        return res.status(401).json({ 
+          error: "Invalid or expired refresh token", 
+          code: "INVALID_REFRESH_TOKEN" 
+        });
+      }
+
+      const user = await storage.getUser(tokenPayload.userId);
+      if (!user || !user.isActive) {
+        return res.status(401).json({ 
+          error: "User not found or inactive", 
+          code: "USER_NOT_FOUND" 
+        });
+      }
+
+      // Generate new access token
+      const newAccessToken = generateAccessToken(user.id, user.email);
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: user.id,
+        action: "token_refresh",
+        resourceType: "auth",
+        resourceId: user.id,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: {}
+      });
+
+      res.json({
+        accessToken: newAccessToken,
+        user: toPublicUser(user)
+      });
+
+    } catch (error) {
+      console.error("Token refresh error:", error);
+      res.status(500).json({ 
+        error: "Token refresh failed", 
+        code: "TOKEN_REFRESH_ERROR" 
+      });
+    }
+  });
+
+  // Send password reset email
+  app.post("/api/auth/forgot-password", passwordResetRateLimit, async (req, res) => {
+    try {
+      const { email } = req.body;
+
+      if (!email) {
+        return res.status(400).json({ 
+          error: "Email is required", 
+          code: "MISSING_EMAIL" 
+        });
+      }
+
+      const normalizedEmail = normalizeEmail(email);
+      if (!validateEmail(normalizedEmail)) {
+        return res.status(400).json({ 
+          error: "Invalid email format", 
+          code: "INVALID_EMAIL" 
+        });
+      }
+
+      const user = await storage.getUserByEmail(normalizedEmail);
+      
+      // Always return success to prevent email enumeration
+      const response = {
+        message: "If an account with that email exists, a password reset link has been sent."
+      };
+
+      if (!user) {
+        // Add audit log for attempt with non-existent email
+        await storage.addAuditLog({
+          action: "password_reset_failed",
+          resourceType: "auth",
+          ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+          userAgent: req.headers['user-agent'] || "unknown",
+          details: { 
+            reason: "email_not_found",
+            attempted_email: normalizedEmail 
+          },
+          success: false
+        });
+
+        return res.json(response);
+      }
+
+      if (!user.isActive) {
+        // Add audit log for inactive account
+        await storage.addAuditLog({
+          userId: user.id,
+          action: "password_reset_failed",
+          resourceType: "auth",
+          resourceId: user.id,
+          ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+          userAgent: req.headers['user-agent'] || "unknown",
+          details: { reason: "account_inactive" },
+          success: false
+        });
+
+        return res.json(response);
+      }
+
+      // Generate password reset token
+      const { token, expires } = generatePasswordResetToken();
+      
+      // Save token to user
+      await storage.setPasswordResetToken(user.id, token, expires);
+
+      // Send password reset email
+      const emailSent = await sendPasswordResetEmail(normalizedEmail, token);
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: user.id,
+        action: "password_reset_requested",
+        resourceType: "auth",
+        resourceId: user.id,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: { emailSent }
+      });
+
+      res.json(response);
+
+    } catch (error) {
+      console.error("Forgot password error:", error);
+      res.status(500).json({ 
+        error: "Failed to process password reset request", 
+        code: "FORGOT_PASSWORD_ERROR" 
+      });
+    }
+  });
+
+  // Reset password using token
+  app.post("/api/auth/reset-password", async (req, res) => {
+    try {
+      const { token, newPassword } = req.body;
+
+      if (!token || !newPassword) {
+        return res.status(400).json({ 
+          error: "Token and new password are required", 
+          code: "MISSING_FIELDS" 
+        });
+      }
+
+      // Validate new password
+      const passwordValidation = validatePassword(newPassword);
+      if (!passwordValidation.valid) {
+        return res.status(400).json({ 
+          error: "Invalid password", 
+          details: passwordValidation.errors,
+          code: "INVALID_PASSWORD"
+        });
+      }
+
+      // Find user by reset token
+      const user = await storage.getUserByPasswordResetToken(token);
+
+      if (!user) {
+        return res.status(400).json({ 
+          error: "Invalid or expired reset token", 
+          code: "INVALID_RESET_TOKEN" 
+        });
+      }
+
+      // Check if token has expired (already checked in getUserByPasswordResetToken, but double-check)
+      if (!user.passwordResetExpires || isTokenExpired(user.passwordResetExpires)) {
+        await storage.clearPasswordResetToken(user.id);
+        
+        await storage.addAuditLog({
+          userId: user.id,
+          action: "password_reset_failed",
+          resourceType: "auth",
+          resourceId: user.id,
+          ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+          userAgent: req.headers['user-agent'] || "unknown",
+          details: { reason: "token_expired" },
+          success: false
+        });
+
+        return res.status(400).json({ 
+          error: "Reset token has expired", 
+          code: "TOKEN_EXPIRED" 
+        });
+      }
+
+      // Check password reuse (last 5 passwords)
+      const hashedNewPassword = await hashPassword(newPassword);
+      const isPasswordReused = await storage.checkPasswordReuse(user.id, hashedNewPassword, 5);
+      
+      if (isPasswordReused) {
+        await storage.addAuditLog({
+          userId: user.id,
+          action: "password_reset_failed",
+          resourceType: "auth",
+          resourceId: user.id,
+          ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+          userAgent: req.headers['user-agent'] || "unknown",
+          details: { reason: "password_reused" },
+          success: false
+        });
+
+        return res.status(400).json({ 
+          error: "Cannot reuse a recent password", 
+          code: "PASSWORD_REUSED" 
+        });
+      }
+
+      // Add current password to history
+      await storage.addPasswordHistory({
+        userId: user.id,
+        hashedPassword: user.hashedPassword
+      });
+
+      // Update password
+      await storage.updateUserPassword(user.id, hashedNewPassword);
+
+      // Clear reset token
+      await storage.clearPasswordResetToken(user.id);
+
+      // Reset login attempts if user was locked
+      await storage.updateUserLoginAttempts(user.id, 0);
+
+      // Revoke all user sessions for security
+      await storage.revokeAllUserSessions(user.id);
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: user.id,
+        action: "password_reset_success",
+        resourceType: "auth",
+        resourceId: user.id,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: {}
+      });
+
+      res.json({
+        message: "Password reset successfully. Please log in with your new password."
+      });
+
+    } catch (error) {
+      console.error("Reset password error:", error);
+      res.status(500).json({ 
+        error: "Password reset failed", 
+        code: "RESET_PASSWORD_ERROR" 
+      });
+    }
+  });
+
+  // Change password for authenticated users
+  app.post("/api/auth/change-password", ...authRequired, async (req, res) => {
+    try {
+      const { currentPassword, newPassword } = req.body;
+
+      if (!currentPassword || !newPassword) {
+        return res.status(400).json({ 
+          error: "Current password and new password are required", 
+          code: "MISSING_FIELDS" 
+        });
+      }
+
+      // Validate new password
+      const passwordValidation = validatePassword(newPassword);
+      if (!passwordValidation.valid) {
+        return res.status(400).json({ 
+          error: "Invalid password", 
+          details: passwordValidation.errors,
+          code: "INVALID_PASSWORD"
+        });
+      }
+
+      // Verify current password
+      const isCurrentPasswordValid = await verifyPassword(currentPassword, req.user!.hashedPassword);
+      if (!isCurrentPasswordValid) {
+        await storage.addAuditLog({
+          userId: req.user!.id,
+          action: "password_change_failed",
+          resourceType: "auth",
+          resourceId: req.user!.id,
+          ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+          userAgent: req.headers['user-agent'] || "unknown",
+          details: { reason: "invalid_current_password" },
+          success: false
+        });
+
+        return res.status(400).json({ 
+          error: "Current password is incorrect", 
+          code: "INVALID_CURRENT_PASSWORD" 
+        });
+      }
+
+      // Check password reuse
+      const hashedNewPassword = await hashPassword(newPassword);
+      const isPasswordReused = await storage.checkPasswordReuse(req.user!.id, hashedNewPassword, 5);
+      
+      if (isPasswordReused) {
+        await storage.addAuditLog({
+          userId: req.user!.id,
+          action: "password_change_failed",
+          resourceType: "auth",
+          resourceId: req.user!.id,
+          ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+          userAgent: req.headers['user-agent'] || "unknown",
+          details: { reason: "password_reused" },
+          success: false
+        });
+
+        return res.status(400).json({ 
+          error: "Cannot reuse a recent password", 
+          code: "PASSWORD_REUSED" 
+        });
+      }
+
+      // Add current password to history
+      await storage.addPasswordHistory({
+        userId: req.user!.id,
+        hashedPassword: req.user!.hashedPassword
+      });
+
+      // Update password
+      await storage.updateUserPassword(req.user!.id, hashedNewPassword);
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: req.user!.id,
+        action: "password_change_success",
+        resourceType: "auth",
+        resourceId: req.user!.id,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: {}
+      });
+
+      res.json({
+        message: "Password changed successfully"
+      });
+
+    } catch (error) {
+      console.error("Change password error:", error);
+      res.status(500).json({ 
+        error: "Password change failed", 
+        code: "CHANGE_PASSWORD_ERROR" 
+      });
+    }
+  });
+
+  // Verify email using token
+  app.post("/api/auth/verify-email", async (req, res) => {
+    try {
+      const { token } = req.body;
+
+      if (!token) {
+        return res.status(400).json({ 
+          error: "Verification token is required", 
+          code: "MISSING_TOKEN" 
+        });
+      }
+
+      // Find user by verification token
+      const user = await storage.getUserByEmailVerificationToken(token);
+
+      if (!user) {
+        return res.status(400).json({ 
+          error: "Invalid verification token", 
+          code: "INVALID_VERIFICATION_TOKEN" 
+        });
+      }
+
+      if (user.emailVerified) {
+        return res.status(400).json({ 
+          error: "Email is already verified", 
+          code: "EMAIL_ALREADY_VERIFIED" 
+        });
+      }
+
+      // Mark email as verified
+      await storage.updateUserEmailVerification(user.id, true);
+      await storage.clearEmailVerificationToken(user.id);
+
+      // Send welcome email
+      await sendWelcomeEmail(user.email, user.firstName);
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: user.id,
+        action: "email_verification_success",
+        resourceType: "auth",
+        resourceId: user.id,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: {}
+      });
+
+      res.json({
+        message: "Email verified successfully",
+        user: toPublicUser({ ...user, emailVerified: true, emailVerificationToken: null })
+      });
+
+    } catch (error) {
+      console.error("Email verification error:", error);
+      res.status(500).json({ 
+        error: "Email verification failed", 
+        code: "EMAIL_VERIFICATION_ERROR" 
+      });
+    }
+  });
+
+  // Resend email verification
+  app.post("/api/auth/resend-verification", emailVerificationRateLimit, async (req, res) => {
+    try {
+      const { email } = req.body;
+
+      if (!email) {
+        return res.status(400).json({ 
+          error: "Email is required", 
+          code: "MISSING_EMAIL" 
+        });
+      }
+
+      const normalizedEmail = normalizeEmail(email);
+      const user = await storage.getUserByEmail(normalizedEmail);
+
+      // Always return success to prevent email enumeration
+      const response = {
+        message: "If an unverified account with that email exists, a verification email has been sent."
+      };
+
+      if (!user) {
+        return res.json(response);
+      }
+
+      if (user.emailVerified) {
+        return res.json(response);
+      }
+
+      if (!user.isActive) {
+        return res.json(response);
+      }
+
+      // Generate new verification token
+      const newToken = generateEmailVerificationToken();
+      await storage.setEmailVerificationToken(user.id, newToken);
+
+      // Send verification email
+      const emailSent = await sendVerificationEmail(normalizedEmail, newToken);
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: user.id,
+        action: "email_verification_resent",
+        resourceType: "auth",
+        resourceId: user.id,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: { emailSent }
+      });
+
+      res.json(response);
+
+    } catch (error) {
+      console.error("Resend verification error:", error);
+      res.status(500).json({ 
+        error: "Failed to resend verification email", 
+        code: "RESEND_VERIFICATION_ERROR" 
+      });
+    }
   });
 
   // Projects routes
