@@ -6,12 +6,23 @@ import { z } from "zod";
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   username: text("username").notNull().unique(),
-  password: text("password").notNull(),
-  email: text("email").notNull(),
+  hashedPassword: text("hashed_password").notNull(),
+  email: text("email").notNull().unique(),
   role: text("role").notNull().default("user"),
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
+  emailVerified: boolean("email_verified").default(false),
+  emailVerificationToken: text("email_verification_token"),
+  passwordResetToken: text("password_reset_token"),
+  passwordResetExpires: timestamp("password_reset_expires"),
+  lastLoginAt: timestamp("last_login_at"),
+  loginAttempts: integer("login_attempts").default(0),
+  lockedUntil: timestamp("locked_until"),
+  isActive: boolean("is_active").default(true),
+  twoFactorSecret: text("two_factor_secret"),
+  twoFactorEnabled: boolean("two_factor_enabled").default(false),
   createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
 });
 
 export const projects = pgTable("projects", {
@@ -149,8 +160,60 @@ export const acumaticaSync = pgTable("acumatica_sync", {
   completedAt: timestamp("completed_at"),
 });
 
+export const sessions = pgTable("sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id).notNull(),
+  sessionToken: text("session_token").notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  lastAccessedAt: timestamp("last_accessed_at").notNull(),
+  userAgent: text("user_agent"),
+  ipAddress: text("ip_address"),
+  isActive: boolean("is_active").default(true),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const passwordHistory = pgTable("password_history", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id).notNull(),
+  hashedPassword: text("hashed_password").notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const auditLogs = pgTable("audit_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id),
+  action: text("action").notNull(), // login, logout, password_change, profile_update, etc.
+  resourceType: text("resource_type"), // user, project, task, etc.
+  resourceId: varchar("resource_id"),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  sessionId: varchar("session_id").references(() => sessions.id),
+  details: jsonb("details"), // additional context data
+  success: boolean("success").notNull().default(true),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
 // Insert schemas
 export const insertUserSchema = createInsertSchema(users).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertSessionSchema = createInsertSchema(sessions).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertPasswordHistorySchema = createInsertSchema(passwordHistory).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
   id: true,
   createdAt: true,
 });
@@ -197,6 +260,12 @@ export const insertAcumaticaSyncSchema = createInsertSchema(acumaticaSync).omit(
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
+export type Session = typeof sessions.$inferSelect;
+export type InsertSession = z.infer<typeof insertSessionSchema>;
+export type PasswordHistory = typeof passwordHistory.$inferSelect;
+export type InsertPasswordHistory = z.infer<typeof insertPasswordHistorySchema>;
+export type AuditLog = typeof auditLogs.$inferSelect;
+export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type Project = typeof projects.$inferSelect;
 export type InsertProject = z.infer<typeof insertProjectSchema>;
 export type Task = typeof tasks.$inferSelect;
@@ -211,3 +280,30 @@ export type Risk = typeof risks.$inferSelect;
 export type InsertRisk = z.infer<typeof insertRiskSchema>;
 export type AcumaticaSync = typeof acumaticaSync.$inferSelect;
 export type InsertAcumaticaSync = z.infer<typeof insertAcumaticaSyncSchema>;
+
+// Public/Safe User type that omits sensitive security fields
+export type PublicUser = Omit<User, 
+  | 'hashedPassword' 
+  | 'emailVerificationToken' 
+  | 'passwordResetToken' 
+  | 'passwordResetExpires' 
+  | 'twoFactorSecret' 
+  | 'loginAttempts' 
+  | 'lockedUntil'
+>;
+
+// User serialization utility
+export function toPublicUser(user: User): PublicUser {
+  const {
+    hashedPassword,
+    emailVerificationToken,
+    passwordResetToken,
+    passwordResetExpires,
+    twoFactorSecret,
+    loginAttempts,
+    lockedUntil,
+    ...publicUser
+  } = user;
+  
+  return publicUser;
+}

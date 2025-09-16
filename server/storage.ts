@@ -1,11 +1,42 @@
-import { type User, type InsertUser, type Project, type InsertProject, type Task, type InsertTask, type TimeEntry, type InsertTimeEntry, type RFI, type InsertRFI, type ChangeOrder, type InsertChangeOrder, type Risk, type InsertRisk, type AcumaticaSync, type InsertAcumaticaSync } from "@shared/schema";
+import { type User, type InsertUser, type PublicUser, type Session, type InsertSession, type PasswordHistory, type InsertPasswordHistory, type AuditLog, type InsertAuditLog, type Project, type InsertProject, type Task, type InsertTask, type TimeEntry, type InsertTimeEntry, type RFI, type InsertRFI, type ChangeOrder, type InsertChangeOrder, type Risk, type InsertRisk, type AcumaticaSync, type InsertAcumaticaSync } from "@shared/schema";
 import { randomUUID } from "crypto";
+import bcrypt from "bcrypt";
 
 export interface IStorage {
   // Users
   getUser(id: string): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
+  getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
+  updateUserPassword(id: string, hashedPassword: string): Promise<boolean>;
+  updateUserEmailVerification(id: string, verified: boolean): Promise<boolean>;
+  updateUserLoginAttempts(id: string, attempts: number, lockedUntil?: Date): Promise<boolean>;
+  updateUserLastLogin(id: string): Promise<boolean>;
+  
+  // Token Management
+  setPasswordResetToken(userId: string, token: string, expires: Date): Promise<boolean>;
+  clearPasswordResetToken(userId: string): Promise<boolean>;
+  setEmailVerificationToken(userId: string, token: string): Promise<boolean>;
+  clearEmailVerificationToken(userId: string): Promise<boolean>;
+  
+  // Two-Factor Authentication
+  setTwoFactorSecret(userId: string, secret: string): Promise<boolean>;
+  clearTwoFactorSecret(userId: string): Promise<boolean>;
+  setTwoFactorEnabled(userId: string, enabled: boolean): Promise<boolean>;
+  
+  // Session Management
+  createSession(session: InsertSession): Promise<Session>;
+  getSessionByToken(token: string): Promise<Session | undefined>;
+  updateSessionLastAccess(sessionId: string): Promise<boolean>;
+  revokeSession(sessionId: string): Promise<boolean>;
+  revokeAllUserSessions(userId: string): Promise<number>;
+  
+  // Password History
+  addPasswordHistory(passwordHistory: InsertPasswordHistory): Promise<PasswordHistory>;
+  checkPasswordReuse(userId: string, hashedPassword: string, limit: number): Promise<boolean>;
+  
+  // Audit Logs
+  addAuditLog(auditLog: InsertAuditLog): Promise<AuditLog>;
   
   // Projects
   getProjects(): Promise<Project[]>;
@@ -62,6 +93,9 @@ export interface IStorage {
 
 export class MemStorage implements IStorage {
   private users: Map<string, User>;
+  private sessions: Map<string, Session>;
+  private passwordHistory: Map<string, PasswordHistory>;
+  private auditLogs: Map<string, AuditLog>;
   private projects: Map<string, Project>;
   private tasks: Map<string, Task>;
   private timeEntries: Map<string, TimeEntry>;
@@ -72,6 +106,9 @@ export class MemStorage implements IStorage {
 
   constructor() {
     this.users = new Map();
+    this.sessions = new Map();
+    this.passwordHistory = new Map();
+    this.auditLogs = new Map();
     this.projects = new Map();
     this.tasks = new Map();
     this.timeEntries = new Map();
@@ -85,15 +122,28 @@ export class MemStorage implements IStorage {
   private initializeData() {
     // Create default admin user
     const adminUserId = randomUUID();
+    // Hash the password "admin" for demo purposes
+    const hashedPassword = bcrypt.hashSync("admin", 10);
     const adminUser: User = {
       id: adminUserId,
       username: "admin",
-      password: "admin",
+      hashedPassword: hashedPassword,
       email: "admin@electroproject.com",
       role: "admin",
       firstName: "John",
       lastName: "Smith",
+      emailVerified: true,
+      emailVerificationToken: null,
+      passwordResetToken: null,
+      passwordResetExpires: null,
+      lastLoginAt: null,
+      loginAttempts: 0,
+      lockedUntil: null,
+      isActive: true,
+      twoFactorSecret: null,
+      twoFactorEnabled: false,
       createdAt: new Date(),
+      updatedAt: new Date(),
     };
     this.users.set(adminUser.id, adminUser);
 
@@ -424,16 +474,306 @@ export class MemStorage implements IStorage {
     return Array.from(this.users.values()).find(user => user.username === username);
   }
 
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    return Array.from(this.users.values()).find(user => user.email === email);
+  }
+
   async createUser(insertUser: InsertUser): Promise<User> {
     const id = randomUUID();
     const user: User = { 
       ...insertUser, 
       id, 
       createdAt: new Date(),
-      role: insertUser.role ?? "user"
+      updatedAt: new Date(),
+      role: insertUser.role ?? "user",
+      emailVerified: insertUser.emailVerified ?? false,
+      emailVerificationToken: insertUser.emailVerificationToken ?? null,
+      passwordResetToken: insertUser.passwordResetToken ?? null,
+      passwordResetExpires: insertUser.passwordResetExpires ?? null,
+      lastLoginAt: insertUser.lastLoginAt ?? null,
+      loginAttempts: insertUser.loginAttempts ?? 0,
+      lockedUntil: insertUser.lockedUntil ?? null,
+      isActive: insertUser.isActive ?? true,
+      twoFactorSecret: insertUser.twoFactorSecret ?? null,
+      twoFactorEnabled: insertUser.twoFactorEnabled ?? false
     };
     this.users.set(id, user);
     return user;
+  }
+
+  async updateUserPassword(id: string, hashedPassword: string): Promise<boolean> {
+    const user = this.users.get(id);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      hashedPassword,
+      updatedAt: new Date(),
+    };
+    this.users.set(id, updated);
+    return true;
+  }
+
+  async updateUserEmailVerification(id: string, verified: boolean): Promise<boolean> {
+    const user = this.users.get(id);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      emailVerified: verified,
+      emailVerificationToken: verified ? null : user.emailVerificationToken,
+      updatedAt: new Date(),
+    };
+    this.users.set(id, updated);
+    return true;
+  }
+
+  async updateUserLoginAttempts(id: string, attempts: number, lockedUntil?: Date): Promise<boolean> {
+    const user = this.users.get(id);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      loginAttempts: attempts,
+      lockedUntil: lockedUntil ?? null,
+      updatedAt: new Date(),
+    };
+    this.users.set(id, updated);
+    return true;
+  }
+
+  async updateUserLastLogin(id: string): Promise<boolean> {
+    const user = this.users.get(id);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      lastLoginAt: new Date(),
+      updatedAt: new Date(),
+    };
+    this.users.set(id, updated);
+    return true;
+  }
+
+  // Token Management
+  async setPasswordResetToken(userId: string, token: string, expires: Date): Promise<boolean> {
+    const user = this.users.get(userId);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      passwordResetToken: token,
+      passwordResetExpires: expires,
+      updatedAt: new Date(),
+    };
+    this.users.set(userId, updated);
+    return true;
+  }
+
+  async clearPasswordResetToken(userId: string): Promise<boolean> {
+    const user = this.users.get(userId);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      passwordResetToken: null,
+      passwordResetExpires: null,
+      updatedAt: new Date(),
+    };
+    this.users.set(userId, updated);
+    return true;
+  }
+
+  async setEmailVerificationToken(userId: string, token: string): Promise<boolean> {
+    const user = this.users.get(userId);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      emailVerificationToken: token,
+      updatedAt: new Date(),
+    };
+    this.users.set(userId, updated);
+    return true;
+  }
+
+  async clearEmailVerificationToken(userId: string): Promise<boolean> {
+    const user = this.users.get(userId);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      emailVerificationToken: null,
+      updatedAt: new Date(),
+    };
+    this.users.set(userId, updated);
+    return true;
+  }
+
+  // Two-Factor Authentication
+  async setTwoFactorSecret(userId: string, secret: string): Promise<boolean> {
+    const user = this.users.get(userId);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      twoFactorSecret: secret,
+      updatedAt: new Date(),
+    };
+    this.users.set(userId, updated);
+    return true;
+  }
+
+  async clearTwoFactorSecret(userId: string): Promise<boolean> {
+    const user = this.users.get(userId);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      twoFactorSecret: null,
+      twoFactorEnabled: false,
+      updatedAt: new Date(),
+    };
+    this.users.set(userId, updated);
+    return true;
+  }
+
+  async setTwoFactorEnabled(userId: string, enabled: boolean): Promise<boolean> {
+    const user = this.users.get(userId);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      twoFactorEnabled: enabled,
+      updatedAt: new Date(),
+    };
+    this.users.set(userId, updated);
+    return true;
+  }
+
+  // Session Management
+  async createSession(insertSession: InsertSession): Promise<Session> {
+    const id = randomUUID();
+    const session: Session = {
+      ...insertSession,
+      id,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      isActive: insertSession.isActive ?? true,
+      userAgent: insertSession.userAgent ?? null,
+      ipAddress: insertSession.ipAddress ?? null
+    };
+    this.sessions.set(id, session);
+    return session;
+  }
+
+  async getSessionByToken(token: string): Promise<Session | undefined> {
+    const now = new Date();
+    return Array.from(this.sessions.values()).find(session => 
+      session.sessionToken === token && 
+      session.isActive && 
+      session.expiresAt > now
+    );
+  }
+
+  async updateSessionLastAccess(sessionId: string): Promise<boolean> {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.isActive) return false;
+    
+    const now = new Date();
+    // Check if session has expired
+    if (session.expiresAt <= now) {
+      // Auto-revoke expired session
+      const expired: Session = {
+        ...session,
+        isActive: false,
+        updatedAt: now,
+      };
+      this.sessions.set(sessionId, expired);
+      return false;
+    }
+    
+    const updated: Session = {
+      ...session,
+      lastAccessedAt: now,
+      updatedAt: now,
+    };
+    this.sessions.set(sessionId, updated);
+    return true;
+  }
+
+  async revokeSession(sessionId: string): Promise<boolean> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    
+    const updated: Session = {
+      ...session,
+      isActive: false,
+      updatedAt: new Date(),
+    };
+    this.sessions.set(sessionId, updated);
+    return true;
+  }
+
+  async revokeAllUserSessions(userId: string): Promise<number> {
+    let count = 0;
+    const userSessions = Array.from(this.sessions.values()).filter(
+      session => session.userId === userId && session.isActive
+    );
+    
+    for (const session of userSessions) {
+      const updated: Session = {
+        ...session,
+        isActive: false,
+        updatedAt: new Date(),
+      };
+      this.sessions.set(session.id, updated);
+      count++;
+    }
+    
+    return count;
+  }
+
+  // Password History
+  async addPasswordHistory(insertPasswordHistory: InsertPasswordHistory): Promise<PasswordHistory> {
+    const id = randomUUID();
+    const passwordHistory: PasswordHistory = {
+      ...insertPasswordHistory,
+      id,
+      createdAt: new Date(),
+    };
+    this.passwordHistory.set(id, passwordHistory);
+    return passwordHistory;
+  }
+
+  async checkPasswordReuse(userId: string, hashedPassword: string, limit: number): Promise<boolean> {
+    const userPasswordHistory = Array.from(this.passwordHistory.values())
+      .filter(history => history.userId === userId && history.createdAt)
+      .sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0))
+      .slice(0, limit);
+    
+    return userPasswordHistory.some(history => history.hashedPassword === hashedPassword);
+  }
+
+  // Audit Logs
+  async addAuditLog(insertAuditLog: InsertAuditLog): Promise<AuditLog> {
+    const id = randomUUID();
+    const auditLog: AuditLog = {
+      ...insertAuditLog,
+      id,
+      createdAt: new Date(),
+      success: insertAuditLog.success ?? true,
+      userId: insertAuditLog.userId ?? null,
+      resourceType: insertAuditLog.resourceType ?? null,
+      resourceId: insertAuditLog.resourceId ?? null,
+      ipAddress: insertAuditLog.ipAddress ?? null,
+      userAgent: insertAuditLog.userAgent ?? null,
+      sessionId: insertAuditLog.sessionId ?? null,
+      details: insertAuditLog.details ?? null,
+      errorMessage: insertAuditLog.errorMessage ?? null
+    };
+    this.auditLogs.set(id, auditLog);
+    return auditLog;
   }
 
   // Projects
