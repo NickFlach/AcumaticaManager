@@ -22,6 +22,11 @@ import RegisterPage from "@/pages/auth/register";
 import ForgotPasswordPage from "@/pages/auth/forgot-password";
 import ResetPasswordPage from "@/pages/auth/reset-password";
 
+// Profile and admin pages
+import ProfilePage from "@/pages/profile";
+import AccountSettingsPage from "@/pages/account-settings";
+import AdminUsersPage from "@/pages/admin/users";
+
 // Protected route wrapper
 function ProtectedRoute({ component: Component, ...props }: { component: any }) {
   const { isAuthenticated, isInitializing } = useAuth();
@@ -54,6 +59,29 @@ function AuthRoute({ component: Component, ...props }: { component: any }) {
   }
 
   if (isAuthenticated) {
+    return <Redirect to="/" />;
+  }
+
+  return <Component {...props} />;
+}
+
+// Admin route wrapper - requires admin role
+function AdminRoute({ component: Component, ...props }: { component: any }) {
+  const { isAuthenticated, isInitializing, user } = useAuth();
+
+  if (isInitializing) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Redirect to="/auth/login" />;
+  }
+
+  if (user?.role !== 'admin') {
     return <Redirect to="/" />;
   }
 
@@ -160,6 +188,41 @@ function ProtectedExcelImportExport(props: any) {
   );
 }
 
+// Profile and account settings protected wrappers
+function ProtectedProfile(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-profile">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <ProfilePage {...props} />
+      </div>
+    </div>
+  );
+}
+
+function ProtectedAccountSettings(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-account-settings">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <AccountSettingsPage {...props} />
+      </div>
+    </div>
+  );
+}
+
+// Admin protected wrapper
+function ProtectedAdminUsers(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-admin-users">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <AdminUsersPage {...props} />
+      </div>
+    </div>
+  );
+}
+
 function AppRoutes() {
   const { isAuthenticated, isInitializing } = useAuth();
   
@@ -215,6 +278,19 @@ function AppRoutes() {
       </Route>
       <Route path="/excel-import-export">
         <ProtectedRoute component={ProtectedExcelImportExport} />
+      </Route>
+      
+      {/* Profile and Account Routes */}
+      <Route path="/profile">
+        <ProtectedRoute component={ProtectedProfile} />
+      </Route>
+      <Route path="/account-settings">
+        <ProtectedRoute component={ProtectedAccountSettings} />
+      </Route>
+      
+      {/* Admin Routes */}
+      <Route path="/admin/users">
+        <AdminRoute component={ProtectedAdminUsers} />
       </Route>
       
       {/* Catch all - redirect to login if not authenticated, otherwise not found */}

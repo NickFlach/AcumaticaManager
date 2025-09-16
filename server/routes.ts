@@ -10,6 +10,13 @@ import {
   insertRiskSchema, 
   insertAcumaticaSyncSchema,
   insertUserSchema,
+  updateProfileSchema,
+  changePasswordSchema,
+  updateUserRoleSchema,
+  updateUserStatusSchema,
+  resetUserPasswordSchema,
+  userListFiltersSchema,
+  updateNotificationPreferencesSchema,
   toPublicUser 
 } from "@shared/schema";
 import { z } from "zod";
@@ -935,6 +942,405 @@ export async function registerRoutes(app: Express): Promise<Server> {
         error: "Failed to resend verification email", 
         code: "RESEND_VERIFICATION_ERROR" 
       });
+    }
+  });
+
+  // =============================================
+  // PROFILE AND USER MANAGEMENT ROUTES
+  // =============================================
+
+  // Update user profile
+  app.put("/api/auth/profile", ...authRequired, async (req, res) => {
+    try {
+      const validatedData = updateProfileSchema.parse(req.body);
+      
+      // Check if email is being changed and if it's already taken
+      if (validatedData.email !== req.user!.email) {
+        const existingUser = await storage.getUserByEmail(validatedData.email);
+        if (existingUser && existingUser.id !== req.user!.id) {
+          return res.status(409).json({ 
+            error: "Email already in use", 
+            code: "EMAIL_EXISTS" 
+          });
+        }
+      }
+
+      const updatedUser = await storage.updateUserProfile(req.user!.id, validatedData);
+      if (!updatedUser) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: req.user!.id,
+        action: "profile_updated",
+        resourceType: "user",
+        resourceId: req.user!.id,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: { 
+          changes: validatedData,
+          emailChanged: validatedData.email !== req.user!.email
+        }
+      });
+
+      res.json({
+        message: "Profile updated successfully",
+        user: toPublicUser(updatedUser)
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid profile data", details: error.errors });
+      }
+      console.error("Profile update error:", error);
+      res.status(500).json({ error: "Failed to update profile" });
+    }
+  });
+
+  // Update notification preferences
+  // Get user notification preferences
+  app.get("/api/auth/preferences", ...authRequired, async (req, res) => {
+    try {
+      const preferences = await storage.getUserNotificationPreferences(req.user!.id);
+      
+      // Return default preferences if none exist
+      const defaultPreferences = {
+        emailNotifications: true,
+        projectUpdates: true,
+        taskReminders: true,
+        securityAlerts: true,
+      };
+      
+      res.json({ preferences: preferences || defaultPreferences });
+    } catch (error) {
+      console.error("Failed to get notification preferences:", error);
+      res.status(500).json({ error: "Failed to get preferences" });
+    }
+  });
+
+  // Update user notification preferences
+  app.put("/api/auth/preferences", ...authRequired, async (req, res) => {
+    try {
+      const validatedData = updateNotificationPreferencesSchema.parse(req.body);
+      
+      // Actually persist the preferences
+      const success = await storage.updateUserNotificationPreferences(req.user!.id, validatedData);
+      
+      if (!success) {
+        return res.status(500).json({ error: "Failed to update preferences" });
+      }
+      
+      // Add audit log
+      await storage.addAuditLog({
+        userId: req.user!.id,
+        action: "preferences_updated",
+        resourceType: "user",
+        resourceId: req.user!.id,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: validatedData
+      });
+
+      res.json({
+        message: "Preferences updated successfully",
+        preferences: validatedData
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid preferences data", details: error.errors });
+      }
+      console.error("Failed to update notification preferences:", error);
+      res.status(500).json({ error: "Failed to update preferences" });
+    }
+  });
+
+  // Get user sessions
+  app.get("/api/auth/sessions", ...authRequired, async (req, res) => {
+    try {
+      const sessions = await storage.getUserSessions(req.user!.id);
+      
+      // Add current session indicator
+      const sessionToken = req.headers.authorization?.replace('Bearer ', '') || '';
+      const currentSession = req.session?.id;
+      
+      const sessionsWithIndicator = sessions.map(session => ({
+        ...session,
+        isCurrent: session.id === currentSession || session.sessionToken === sessionToken
+      }));
+
+      res.json(sessionsWithIndicator);
+    } catch (error) {
+      console.error("Get sessions error:", error);
+      res.status(500).json({ error: "Failed to fetch sessions" });
+    }
+  });
+
+  // Logout from specific session
+  app.delete("/api/auth/sessions/:sessionId", ...authRequired, async (req, res) => {
+    try {
+      const { sessionId } = req.params;
+      const success = await storage.revokeSession(sessionId);
+      
+      if (!success) {
+        return res.status(404).json({ error: "Session not found" });
+      }
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: req.user!.id,
+        action: "session_revoked",
+        resourceType: "session",
+        resourceId: sessionId,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: { sessionId }
+      });
+
+      res.json({ message: "Session ended successfully" });
+    } catch (error) {
+      console.error("Session logout error:", error);
+      res.status(500).json({ error: "Failed to end session" });
+    }
+  });
+
+  // Logout from all devices
+  app.post("/api/auth/logout-all", ...authRequired, async (req, res) => {
+    try {
+      const revokedCount = await storage.revokeAllUserSessions(req.user!.id);
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: req.user!.id,
+        action: "all_sessions_revoked",
+        resourceType: "session",
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: { revokedCount }
+      });
+
+      res.json({ 
+        message: "Logged out from all devices successfully",
+        revokedSessions: revokedCount
+      });
+    } catch (error) {
+      console.error("Logout all error:", error);
+      res.status(500).json({ error: "Failed to logout from all devices" });
+    }
+  });
+
+  // =============================================
+  // ADMIN USER MANAGEMENT ROUTES
+  // =============================================
+
+  // Get all users with filtering
+  app.get("/api/admin/users", ...adminRequired, async (req, res) => {
+    try {
+      const filters = userListFiltersSchema.parse(req.query);
+      const usersResponse = await storage.getUsersWithFilters(filters);
+      
+      // Convert user data to public format
+      const safeUsersResponse = {
+        ...usersResponse,
+        users: usersResponse.users.map(user => toPublicUser(user))
+      };
+
+      res.json(safeUsersResponse);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid filter parameters", details: error.errors });
+      }
+      console.error("Get users error:", error);
+      res.status(500).json({ error: "Failed to fetch users" });
+    }
+  });
+
+  // Update user role
+  app.put("/api/admin/users/role", ...adminRequired, async (req, res) => {
+    try {
+      const validatedData = updateUserRoleSchema.parse(req.body);
+      
+      // Prevent self role change
+      if (validatedData.userId === req.user!.id) {
+        return res.status(400).json({ 
+          error: "Cannot change your own role", 
+          code: "SELF_ROLE_CHANGE" 
+        });
+      }
+
+      const user = await storage.getUser(validatedData.userId);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const success = await storage.updateUserRole(validatedData.userId, validatedData.role);
+      if (!success) {
+        return res.status(500).json({ error: "Failed to update user role" });
+      }
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: req.user!.id,
+        action: "user_role_updated",
+        resourceType: "user",
+        resourceId: validatedData.userId,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: { 
+          previousRole: user.role,
+          newRole: validatedData.role,
+          targetUser: { id: user.id, username: user.username }
+        }
+      });
+
+      res.json({ 
+        message: "User role updated successfully",
+        user: { id: user.id, username: user.username, role: validatedData.role }
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid role data", details: error.errors });
+      }
+      console.error("Update user role error:", error);
+      res.status(500).json({ error: "Failed to update user role" });
+    }
+  });
+
+  // Update user status (enable/disable)
+  app.put("/api/admin/users/status", ...adminRequired, async (req, res) => {
+    try {
+      const validatedData = updateUserStatusSchema.parse(req.body);
+      
+      // Prevent self status change
+      if (validatedData.userId === req.user!.id) {
+        return res.status(400).json({ 
+          error: "Cannot change your own account status", 
+          code: "SELF_STATUS_CHANGE" 
+        });
+      }
+
+      const user = await storage.getUser(validatedData.userId);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const success = await storage.updateUserStatus(validatedData.userId, validatedData.isActive);
+      if (!success) {
+        return res.status(500).json({ error: "Failed to update user status" });
+      }
+
+      // Revoke all sessions if deactivating
+      if (!validatedData.isActive) {
+        await storage.revokeAllUserSessions(validatedData.userId);
+      }
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: req.user!.id,
+        action: validatedData.isActive ? "user_activated" : "user_deactivated",
+        resourceType: "user",
+        resourceId: validatedData.userId,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: { 
+          previousStatus: user.isActive,
+          newStatus: validatedData.isActive,
+          targetUser: { id: user.id, username: user.username },
+          sessionsRevoked: !validatedData.isActive
+        }
+      });
+
+      res.json({ 
+        message: `User ${validatedData.isActive ? 'activated' : 'deactivated'} successfully`,
+        user: { id: user.id, username: user.username, isActive: validatedData.isActive }
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid status data", details: error.errors });
+      }
+      console.error("Update user status error:", error);
+      res.status(500).json({ error: "Failed to update user status" });
+    }
+  });
+
+  // Reset user password (admin)
+  app.post("/api/admin/users/reset-password", ...adminRequired, async (req, res) => {
+    try {
+      const validatedData = resetUserPasswordSchema.parse(req.body);
+      
+      // Prevent self password reset
+      if (validatedData.userId === req.user!.id) {
+        return res.status(400).json({ 
+          error: "Cannot reset your own password", 
+          code: "SELF_PASSWORD_RESET" 
+        });
+      }
+
+      const user = await storage.getUser(validatedData.userId);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      // Hash new password
+      const hashedPassword = await hashPassword(validatedData.newPassword);
+
+      // Add current password to history
+      await storage.addPasswordHistory({
+        userId: user.id,
+        hashedPassword: user.hashedPassword
+      });
+
+      // Update password
+      const success = await storage.updateUserPassword(validatedData.userId, hashedPassword);
+      if (!success) {
+        return res.status(500).json({ error: "Failed to reset password" });
+      }
+
+      // Revoke all user sessions for security
+      await storage.revokeAllUserSessions(validatedData.userId);
+
+      // Add audit log
+      await storage.addAuditLog({
+        userId: req.user!.id,
+        action: "user_password_reset",
+        resourceType: "user",
+        resourceId: validatedData.userId,
+        ipAddress: req.ip || req.connection.remoteAddress || "unknown",
+        userAgent: req.headers['user-agent'] || "unknown",
+        details: { 
+          targetUser: { id: user.id, username: user.username },
+          sessionsRevoked: true
+        }
+      });
+
+      res.json({ 
+        message: "User password reset successfully",
+        user: { id: user.id, username: user.username }
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: "Invalid password data", details: error.errors });
+      }
+      console.error("Reset user password error:", error);
+      res.status(500).json({ error: "Failed to reset user password" });
+    }
+  });
+
+  // Get audit logs for a user
+  app.get("/api/admin/audit-logs/:userId", ...adminRequired, async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const limit = parseInt(req.query.limit as string) || 50;
+      
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const auditLogs = await storage.getAuditLogsByUser(userId, limit);
+      res.json(auditLogs);
+    } catch (error) {
+      console.error("Get audit logs error:", error);
+      res.status(500).json({ error: "Failed to fetch audit logs" });
     }
   });
 

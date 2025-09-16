@@ -257,6 +257,68 @@ export const insertAcumaticaSyncSchema = createInsertSchema(acumaticaSync).omit(
   id: true,
 });
 
+// Profile update schemas
+export const updateProfileSchema = z.object({
+  firstName: z.string().min(1, "First name is required").max(50),
+  lastName: z.string().min(1, "Last name is required").max(50),
+  email: z.string().email("Invalid email format"),
+});
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, "Current password is required"),
+  newPassword: z.string()
+    .min(8, "Password must be at least 8 characters")
+    .regex(/[A-Z]/, "Password must contain uppercase letter")
+    .regex(/[a-z]/, "Password must contain lowercase letter")
+    .regex(/[0-9]/, "Password must contain number")
+    .regex(/[^A-Za-z0-9]/, "Password must contain special character"),
+  confirmPassword: z.string()
+}).refine((data) => data.newPassword === data.confirmPassword, {
+  message: "Passwords don't match",
+  path: ["confirmPassword"],
+});
+
+// Admin user management schemas
+export const updateUserRoleSchema = z.object({
+  userId: z.string().min(1, "User ID is required"),
+  role: z.enum(["user", "manager", "admin"], { 
+    errorMap: () => ({ message: "Role must be user, manager, or admin" })
+  }),
+});
+
+export const updateUserStatusSchema = z.object({
+  userId: z.string().min(1, "User ID is required"),
+  isActive: z.boolean(),
+});
+
+export const resetUserPasswordSchema = z.object({
+  userId: z.string().min(1, "User ID is required"),
+  newPassword: z.string()
+    .min(8, "Password must be at least 8 characters")
+    .regex(/[A-Z]/, "Password must contain uppercase letter")
+    .regex(/[a-z]/, "Password must contain lowercase letter")
+    .regex(/[0-9]/, "Password must contain number")
+    .regex(/[^A-Za-z0-9]/, "Password must contain special character"),
+});
+
+// User list filtering and search schemas
+export const userListFiltersSchema = z.object({
+  search: z.string().optional(),
+  role: z.enum(["user", "manager", "admin"]).optional(),
+  status: z.enum(["active", "inactive"]).optional(),
+  emailVerified: z.boolean().optional(),
+  page: z.number().min(1).default(1),
+  limit: z.number().min(1).max(100).default(20),
+});
+
+// Account settings schemas  
+export const updateNotificationPreferencesSchema = z.object({
+  emailNotifications: z.boolean().default(true),
+  projectUpdates: z.boolean().default(true),
+  taskReminders: z.boolean().default(true),
+  securityAlerts: z.boolean().default(true),
+});
+
 // Types
 export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
@@ -280,6 +342,31 @@ export type Risk = typeof risks.$inferSelect;
 export type InsertRisk = z.infer<typeof insertRiskSchema>;
 export type AcumaticaSync = typeof acumaticaSync.$inferSelect;
 export type InsertAcumaticaSync = z.infer<typeof insertAcumaticaSyncSchema>;
+
+// Profile and admin management types
+export type UpdateProfile = z.infer<typeof updateProfileSchema>;
+export type ChangePassword = z.infer<typeof changePasswordSchema>;
+export type UpdateUserRole = z.infer<typeof updateUserRoleSchema>;
+export type UpdateUserStatus = z.infer<typeof updateUserStatusSchema>;
+export type ResetUserPassword = z.infer<typeof resetUserPasswordSchema>;
+export type UserListFilters = z.infer<typeof userListFiltersSchema>;
+export type NotificationPreferences = z.infer<typeof updateNotificationPreferencesSchema>;
+
+// User management response types
+export interface UserListResponse {
+  users: PublicUser[];
+  totalCount: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface UserWithStats extends PublicUser {
+  projectCount?: number;
+  taskCount?: number;
+  lastActivity?: Date;
+  sessionsCount?: number;
+}
 
 // Public/Safe User type that omits sensitive security fields
 export type PublicUser = Omit<User, 

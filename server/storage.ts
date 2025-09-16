@@ -1,4 +1,4 @@
-import { type User, type InsertUser, type PublicUser, type Session, type InsertSession, type PasswordHistory, type InsertPasswordHistory, type AuditLog, type InsertAuditLog, type Project, type InsertProject, type Task, type InsertTask, type TimeEntry, type InsertTimeEntry, type RFI, type InsertRFI, type ChangeOrder, type InsertChangeOrder, type Risk, type InsertRisk, type AcumaticaSync, type InsertAcumaticaSync } from "@shared/schema";
+import { type User, type InsertUser, type PublicUser, type Session, type InsertSession, type PasswordHistory, type InsertPasswordHistory, type AuditLog, type InsertAuditLog, type Project, type InsertProject, type Task, type InsertTask, type TimeEntry, type InsertTimeEntry, type RFI, type InsertRFI, type ChangeOrder, type InsertChangeOrder, type Risk, type InsertRisk, type AcumaticaSync, type InsertAcumaticaSync, type UserListFilters, type UserListResponse, type UserWithStats, type UpdateProfile, type NotificationPreferences } from "@shared/schema";
 import { randomUUID } from "crypto";
 import bcrypt from "bcrypt";
 
@@ -12,6 +12,12 @@ export interface IStorage {
   updateUserEmailVerification(id: string, verified: boolean): Promise<boolean>;
   updateUserLoginAttempts(id: string, attempts: number, lockedUntil?: Date): Promise<boolean>;
   updateUserLastLogin(id: string): Promise<boolean>;
+  updateUserProfile(id: string, profile: UpdateProfile): Promise<User | undefined>;
+  updateUserRole(id: string, role: string): Promise<boolean>;
+  updateUserStatus(id: string, isActive: boolean): Promise<boolean>;
+  getUsersWithFilters(filters: UserListFilters): Promise<UserListResponse>;
+  getUserSessions(userId: string): Promise<Session[]>;
+  getAuditLogsByUser(userId: string, limit?: number): Promise<AuditLog[]>;
   
   // Token Management
   setPasswordResetToken(userId: string, token: string, expires: Date): Promise<boolean>;
@@ -39,6 +45,10 @@ export interface IStorage {
   
   // Audit Logs
   addAuditLog(auditLog: InsertAuditLog): Promise<AuditLog>;
+  
+  // Notification Preferences
+  getUserNotificationPreferences(userId: string): Promise<NotificationPreferences | undefined>;
+  updateUserNotificationPreferences(userId: string, preferences: NotificationPreferences): Promise<boolean>;
   
   // Projects
   getProjects(): Promise<Project[]>;
@@ -98,6 +108,7 @@ export class MemStorage implements IStorage {
   private sessions: Map<string, Session>;
   private passwordHistory: Map<string, PasswordHistory>;
   private auditLogs: Map<string, AuditLog>;
+  private notificationPreferences: Map<string, NotificationPreferences>;
   private projects: Map<string, Project>;
   private tasks: Map<string, Task>;
   private timeEntries: Map<string, TimeEntry>;
@@ -111,6 +122,7 @@ export class MemStorage implements IStorage {
     this.sessions = new Map();
     this.passwordHistory = new Map();
     this.auditLogs = new Map();
+    this.notificationPreferences = new Map();
     this.projects = new Map();
     this.tasks = new Map();
     this.timeEntries = new Map();
@@ -557,6 +569,133 @@ export class MemStorage implements IStorage {
     return true;
   }
 
+  async updateUserProfile(id: string, profile: UpdateProfile): Promise<User | undefined> {
+    const user = this.users.get(id);
+    if (!user) return undefined;
+    
+    const updated: User = {
+      ...user,
+      firstName: profile.firstName,
+      lastName: profile.lastName,
+      email: profile.email,
+      updatedAt: new Date(),
+    };
+    this.users.set(id, updated);
+    return updated;
+  }
+
+  async updateUserRole(id: string, role: string): Promise<boolean> {
+    const user = this.users.get(id);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      role,
+      updatedAt: new Date(),
+    };
+    this.users.set(id, updated);
+    return true;
+  }
+
+  async updateUserStatus(id: string, isActive: boolean): Promise<boolean> {
+    const user = this.users.get(id);
+    if (!user) return false;
+    
+    const updated: User = {
+      ...user,
+      isActive,
+      updatedAt: new Date(),
+    };
+    this.users.set(id, updated);
+    return true;
+  }
+
+  async getUsersWithFilters(filters: UserListFilters): Promise<UserListResponse> {
+    let users = Array.from(this.users.values());
+    
+    // Apply search filter
+    if (filters.search) {
+      const searchLower = filters.search.toLowerCase();
+      users = users.filter(user => 
+        user.username.toLowerCase().includes(searchLower) ||
+        user.firstName.toLowerCase().includes(searchLower) ||
+        user.lastName.toLowerCase().includes(searchLower) ||
+        user.email.toLowerCase().includes(searchLower)
+      );
+    }
+    
+    // Apply role filter
+    if (filters.role) {
+      users = users.filter(user => user.role === filters.role);
+    }
+    
+    // Apply status filter
+    if (filters.status) {
+      const isActive = filters.status === 'active';
+      users = users.filter(user => user.isActive === isActive);
+    }
+    
+    // Apply email verified filter
+    if (filters.emailVerified !== undefined) {
+      users = users.filter(user => user.emailVerified === filters.emailVerified);
+    }
+    
+    // Calculate pagination
+    const totalCount = users.length;
+    const page = filters.page || 1;
+    const limit = filters.limit || 20;
+    const totalPages = Math.ceil(totalCount / limit);
+    const offset = (page - 1) * limit;
+    
+    // Apply pagination
+    const paginatedUsers = users.slice(offset, offset + limit);
+    
+    // Add stats to users
+    const usersWithStats: UserWithStats[] = paginatedUsers.map(user => {
+      const projectCount = Array.from(this.projects.values()).filter(p => 
+        Array.from(this.tasks.values()).some(t => t.projectId === p.id && t.assignedTo === user.id)
+      ).length;
+      
+      const taskCount = Array.from(this.tasks.values()).filter(t => t.assignedTo === user.id).length;
+      
+      const userSessions = Array.from(this.sessions.values()).filter(s => s.userId === user.id && s.isActive);
+      const sessionsCount = userSessions.length;
+      
+      const lastActivity = userSessions.length > 0 
+        ? new Date(Math.max(...userSessions.map(s => s.lastAccessedAt.getTime())))
+        : user.lastLoginAt;
+      
+      return {
+        ...user,
+        projectCount,
+        taskCount,
+        lastActivity,
+        sessionsCount,
+      } as UserWithStats;
+    });
+    
+    return {
+      users: usersWithStats,
+      totalCount,
+      page,
+      limit,
+      totalPages,
+    };
+  }
+
+  async getUserSessions(userId: string): Promise<Session[]> {
+    return Array.from(this.sessions.values()).filter(session => 
+      session.userId === userId && session.isActive
+    );
+  }
+
+  async getAuditLogsByUser(userId: string, limit: number = 50): Promise<AuditLog[]> {
+    return Array.from(this.auditLogs.values())
+      .filter(log => log.userId === userId)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, limit);
+  }
+
   // Token Management
   async setPasswordResetToken(userId: string, token: string, expires: Date): Promise<boolean> {
     const user = this.users.get(userId);
@@ -790,6 +929,21 @@ export class MemStorage implements IStorage {
     };
     this.auditLogs.set(id, auditLog);
     return auditLog;
+  }
+
+  // Notification Preferences
+  async getUserNotificationPreferences(userId: string): Promise<NotificationPreferences | undefined> {
+    return this.notificationPreferences.get(userId);
+  }
+
+  async updateUserNotificationPreferences(userId: string, preferences: NotificationPreferences): Promise<boolean> {
+    try {
+      this.notificationPreferences.set(userId, preferences);
+      return true;
+    } catch (error) {
+      console.error("Failed to update notification preferences:", error);
+      return false;
+    }
   }
 
   // Projects
