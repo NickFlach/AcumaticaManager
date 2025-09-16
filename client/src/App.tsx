@@ -1,4 +1,4 @@
-import { Switch, Route, Redirect } from "wouter";
+import { Switch, Route, Redirect, Router } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -60,7 +60,107 @@ function AuthRoute({ component: Component, ...props }: { component: any }) {
   return <Component {...props} />;
 }
 
-function Router() {
+// Protected wrapper components that include sidebar layout
+function ProtectedDashboard(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-dashboard">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <Dashboard {...props} />
+      </div>
+    </div>
+  );
+}
+
+function ProtectedProjects(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-projects">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <Projects {...props} />
+      </div>
+    </div>
+  );
+}
+
+function ProtectedTasks(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-tasks">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <Tasks {...props} />
+      </div>
+    </div>
+  );
+}
+
+function ProtectedTimeTracking(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-time-tracking">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <TimeTracking {...props} />
+      </div>
+    </div>
+  );
+}
+
+function ProtectedRfiTracking(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-rfi-tracking">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <RfiTracking {...props} />
+      </div>
+    </div>
+  );
+}
+
+function ProtectedChangeOrders(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-change-orders">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <ChangeOrders {...props} />
+      </div>
+    </div>
+  );
+}
+
+function ProtectedRiskManagement(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-risk-management">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <RiskManagement {...props} />
+      </div>
+    </div>
+  );
+}
+
+function ProtectedAcumaticaSync(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-acumatica-sync">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <AcumaticaSync {...props} />
+      </div>
+    </div>
+  );
+}
+
+function ProtectedExcelImportExport(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-excel-import-export">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <ExcelImportExport {...props} />
+      </div>
+    </div>
+  );
+}
+
+function AppRoutes() {
   const { isAuthenticated, isInitializing } = useAuth();
   
   // Show loading spinner during initialization
@@ -88,29 +188,38 @@ function Router() {
         <AuthRoute component={ResetPasswordPage} />
       </Route>
       
-      {/* Protected Routes - With sidebar */}
+      {/* Protected Routes - Each route individually wrapped */}
+      <Route path="/">
+        <ProtectedRoute component={ProtectedDashboard} />
+      </Route>
+      <Route path="/projects">
+        <ProtectedRoute component={ProtectedProjects} />
+      </Route>
+      <Route path="/tasks">
+        <ProtectedRoute component={ProtectedTasks} />
+      </Route>
+      <Route path="/time-tracking">
+        <ProtectedRoute component={ProtectedTimeTracking} />
+      </Route>
+      <Route path="/rfi-tracking">
+        <ProtectedRoute component={ProtectedRfiTracking} />
+      </Route>
+      <Route path="/change-orders">
+        <ProtectedRoute component={ProtectedChangeOrders} />
+      </Route>
+      <Route path="/risk-management">
+        <ProtectedRoute component={ProtectedRiskManagement} />
+      </Route>
+      <Route path="/acumatica-sync">
+        <ProtectedRoute component={ProtectedAcumaticaSync} />
+      </Route>
+      <Route path="/excel-import-export">
+        <ProtectedRoute component={ProtectedExcelImportExport} />
+      </Route>
+      
+      {/* Catch all - redirect to login if not authenticated, otherwise not found */}
       <Route>
-        {isAuthenticated ? (
-          <div className="flex h-screen bg-gray-50">
-            <Sidebar />
-            <div className="flex-1 flex flex-col overflow-hidden">
-              <Switch>
-                <Route path="/" component={Dashboard} />
-                <Route path="/projects" component={Projects} />
-                <Route path="/tasks" component={Tasks} />
-                <Route path="/time-tracking" component={TimeTracking} />
-                <Route path="/rfi-tracking" component={RfiTracking} />
-                <Route path="/change-orders" component={ChangeOrders} />
-                <Route path="/risk-management" component={RiskManagement} />
-                <Route path="/acumatica-sync" component={AcumaticaSync} />
-                <Route path="/excel-import-export" component={ExcelImportExport} />
-                <Route component={NotFound} />
-              </Switch>
-            </div>
-          </div>
-        ) : (
-          <Redirect to="/auth/login" />
-        )}
+        <ProtectedRoute component={NotFound} />
       </Route>
     </Switch>
   );
@@ -120,10 +229,12 @@ function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <TooltipProvider>
-          <Toaster />
-          <Router />
-        </TooltipProvider>
+        <Router>
+          <TooltipProvider>
+            <Toaster />
+            <AppRoutes />
+          </TooltipProvider>
+        </Router>
       </AuthProvider>
     </QueryClientProvider>
   );
