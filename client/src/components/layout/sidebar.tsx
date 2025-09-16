@@ -15,7 +15,8 @@ import {
   Settings,
   User,
   Users,
-  Shield
+  Shield,
+  LogOut
 } from "lucide-react";
 
 const navigation = [
@@ -72,7 +73,7 @@ function formatRole(role?: string): string {
 
 export default function Sidebar() {
   const [location] = useLocation();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
 
   return (
     <div className="w-64 bg-white shadow-sm border-r border-gray-200 flex flex-col">
@@ -216,11 +217,21 @@ export default function Sidebar() {
                 )}
               </div>
             </div>
-            <Link href="/account-settings">
-              <a className="text-gray-400 hover:text-gray-600" data-testid="button-settings">
-                <Settings size={16} />
-              </a>
-            </Link>
+            <div className="flex items-center space-x-2">
+              <Link href="/account-settings">
+                <a className="text-gray-400 hover:text-gray-600" data-testid="button-settings">
+                  <Settings size={16} />
+                </a>
+              </Link>
+              <button
+                onClick={logout}
+                className="text-gray-400 hover:text-red-600 transition-colors"
+                data-testid="button-logout"
+                title="Logout"
+              >
+                <LogOut size={16} />
+              </button>
+            </div>
           </div>
         ) : (
           <div className="flex items-center space-x-3 animate-pulse">

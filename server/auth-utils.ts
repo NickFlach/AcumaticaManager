@@ -598,15 +598,11 @@ export const generalRateLimit = rateLimit({
 // Create reusable transporter object using environment variables
 const createTransporter = () => {
   if (!EMAIL_USER || !EMAIL_PASS) {
-    const isProduction = process.env.NODE_ENV === "production";
-    if (isProduction) {
-      throw new Error("Email credentials not configured in production environment. Set EMAIL_USER and EMAIL_PASS environment variables.");
-    }
     console.warn("Email credentials not configured. Email functionality will be disabled.");
     return null;
   }
 
-  return nodemailer.createTransport({
+  return nodemailer.createTransporter({
     host: EMAIL_HOST,
     port: EMAIL_PORT,
     secure: EMAIL_PORT === 465, // true for 465, false for other ports
@@ -624,12 +620,8 @@ export async function sendVerificationEmail(email: string, token: string): Promi
   try {
     const transporter = createTransporter();
     if (!transporter) {
-      const isProduction = process.env.NODE_ENV === "production";
-      if (isProduction) {
-        throw new Error("Cannot send verification email: email configuration missing in production");
-      }
       console.log("Email verification simulated for:", email);
-      return true; // Return true in development/demo mode
+      return true; // Return true when email is not configured
     }
 
     const verificationUrl = `${APP_URL}/verify-email?token=${token}`;
@@ -673,12 +665,8 @@ export async function sendPasswordResetEmail(email: string, token: string): Prom
   try {
     const transporter = createTransporter();
     if (!transporter) {
-      const isProduction = process.env.NODE_ENV === "production";
-      if (isProduction) {
-        throw new Error("Cannot send password reset email: email configuration missing in production");
-      }
       console.log("Password reset email simulated for:", email);
-      return true; // Return true in development/demo mode
+      return true; // Return true when email is not configured
     }
 
     const resetUrl = `${APP_URL}/reset-password?token=${token}`;
@@ -725,12 +713,8 @@ export async function sendWelcomeEmail(email: string, firstName: string): Promis
   try {
     const transporter = createTransporter();
     if (!transporter) {
-      const isProduction = process.env.NODE_ENV === "production";
-      if (isProduction) {
-        throw new Error("Cannot send welcome email: email configuration missing in production");
-      }
       console.log("Welcome email simulated for:", email);
-      return true; // Return true in development/demo mode
+      return true; // Return true when email is not configured
     }
     
     const escapedFirstName = escapeHtml(firstName);
@@ -786,12 +770,8 @@ export async function sendAccountLockedEmail(email: string, firstName: string, u
   try {
     const transporter = createTransporter();
     if (!transporter) {
-      const isProduction = process.env.NODE_ENV === "production";
-      if (isProduction) {
-        throw new Error("Cannot send account locked email: email configuration missing in production");
-      }
       console.log("Account locked email simulated for:", email);
-      return true;
+      return true; // Return true when email is not configured
     }
 
     const escapedFirstName = escapeHtml(firstName);

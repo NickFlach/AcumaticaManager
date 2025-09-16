@@ -101,16 +101,49 @@ interface AuthProviderProps {
 }
 
 export const AuthProvider = ({ children }: AuthProviderProps) => {
-  // State management
+  // State management with localStorage persistence
   const [user, setUser] = useState<PublicUser | null>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
-  const [refreshToken, setRefreshToken] = useState<string | null>(null);
+  const [accessToken, setAccessToken] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('accessToken');
+    }
+    return null;
+  });
+  const [refreshToken, setRefreshToken] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('refreshToken');
+    }
+    return null;
+  });
   const [isLoading, setIsLoading] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
   const queryClient = useQueryClient();
   const { toast } = useToast();
+
+  // Token persistence helpers
+  const persistAccessToken = useCallback((token: string | null) => {
+    if (typeof window !== 'undefined') {
+      if (token) {
+        localStorage.setItem('accessToken', token);
+      } else {
+        localStorage.removeItem('accessToken');
+      }
+    }
+    setAccessToken(token);
+  }, []);
+
+  const persistRefreshToken = useCallback((token: string | null) => {
+    if (typeof window !== 'undefined') {
+      if (token) {
+        localStorage.setItem('refreshToken', token);
+      } else {
+        localStorage.removeItem('refreshToken');
+      }
+    }
+    setRefreshToken(token);
+  }, []);
 
   // Computed state
   const isAuthenticated = !!user;
@@ -150,8 +183,8 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     },
     onSuccess: (data: LoginResponse) => {
       setUser(data.user);
-      setAccessToken(data.accessToken);
-      setRefreshToken(data.refreshToken);
+      persistAccessToken(data.accessToken);
+      persistRefreshToken(data.refreshToken);
       setError(null);
       // Invalidate specific auth queries
       queryClient.invalidateQueries({ queryKey: ['/api/auth/me'] });
@@ -205,8 +238,8 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     },
     onSuccess: (data: LogoutResponse) => {
       setUser(null);
-      setAccessToken(null);
-      setRefreshToken(null);
+      persistAccessToken(null);
+      persistRefreshToken(null);
       setError(null);
       // Clear all cached data
       queryClient.clear();
@@ -218,6 +251,8 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     onError: (error: any) => {
       // Even if logout fails on server, clear local data
       setUser(null);
+      persistAccessToken(null);
+      persistRefreshToken(null);
       queryClient.clear();
       console.error('Logout error:', error);
       // Still show success message since local state is cleared
@@ -238,15 +273,15 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       return response.json();
     },
     onSuccess: (data: TokenRefreshResponse) => {
-      setAccessToken(data.accessToken);
+      persistAccessToken(data.accessToken);
       setUser(data.user);
       setError(null);
     },
     onError: (error: any) => {
       console.error('Token refresh failed:', error);
       // Clear tokens and user on refresh failure
-      setAccessToken(null);
-      setRefreshToken(null);
+      persistAccessToken(null);
+      persistRefreshToken(null);
       setUser(null);
       queryClient.clear();
     },
@@ -368,7 +403,19 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
 
   const checkAuthStatus = useCallback(async (): Promise<void> => {
     try {
-      // Try to get current user info using cookies for authentication
+      // Try JWT authentication first if we have stored tokens
+      if (accessToken) {
+        const result = await refetchUser();
+        const responseData = result.data as MeResponse;
+        
+        if (responseData?.user) {
+          setUser(responseData.user);
+          setError(null);
+          return;
+        }
+      }
+      
+      // Try session cookie authentication as fallback
       const result = await refetchUser();
       const responseData = result.data as MeResponse;
       
@@ -376,17 +423,23 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
         setUser(responseData.user);
         setError(null);
       } else {
-        // No valid session found
+        // No valid authentication found
         setUser(null);
+        // Clear stored tokens if authentication fails
+        persistAccessToken(null);
+        persistRefreshToken(null);
       }
     } catch (error) {
       // Authentication failed, user is not logged in
       setUser(null);
+      // Clear stored tokens if authentication fails
+      persistAccessToken(null);
+      persistRefreshToken(null);
       console.log('No valid authentication found');
     } finally {
       setIsInitializing(false);
     }
-  }, [refetchUser]);
+  }, [refetchUser, accessToken, persistAccessToken, persistRefreshToken]);
 
   // =============================================
   // INITIALIZATION
