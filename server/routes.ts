@@ -3,8 +3,55 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { insertProjectSchema, insertTaskSchema, insertTimeEntrySchema, insertRfiSchema, insertChangeOrderSchema, insertRiskSchema, insertAcumaticaSyncSchema } from "@shared/schema";
 import { z } from "zod";
+import { 
+  requireAuth, 
+  requireSession, 
+  optionalAuth, 
+  requireRole,
+  requireEmailVerified,
+  requireActiveAccount,
+  authRequired,
+  adminRequired,
+  roleRequired,
+  generalRateLimit
+} from "./auth-middleware";
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Authentication demonstration routes - showing middleware in action
+  app.get("/api/auth/test/public", (req, res) => {
+    res.json({ message: "Public endpoint - no authentication required", user: req.user || null });
+  });
+
+  app.get("/api/auth/test/optional", optionalAuth, (req, res) => {
+    res.json({ 
+      message: "Optional authentication endpoint", 
+      authenticated: !!req.user,
+      user: req.user ? { id: req.user.id, username: req.user.username, role: req.user.role } : null 
+    });
+  });
+
+  app.get("/api/auth/test/required", ...authRequired, (req, res) => {
+    res.json({ 
+      message: "Authentication required endpoint", 
+      user: { id: req.user!.id, username: req.user!.username, role: req.user!.role },
+      authMethod: req.authMethod
+    });
+  });
+
+  app.get("/api/auth/test/admin", ...adminRequired, (req, res) => {
+    res.json({ 
+      message: "Admin only endpoint", 
+      user: { id: req.user!.id, username: req.user!.username, role: req.user!.role }
+    });
+  });
+
+  app.get("/api/auth/test/manager", ...roleRequired(['admin', 'manager']), (req, res) => {
+    res.json({ 
+      message: "Manager or Admin only endpoint", 
+      user: { id: req.user!.id, username: req.user!.username, role: req.user!.role }
+    });
+  });
+
   // Projects routes
   app.get("/api/projects", async (req, res) => {
     try {
