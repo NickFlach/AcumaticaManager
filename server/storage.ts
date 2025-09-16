@@ -1,6 +1,11 @@
 import { type User, type InsertUser, type PublicUser, type Session, type InsertSession, type PasswordHistory, type InsertPasswordHistory, type AuditLog, type InsertAuditLog, type Project, type InsertProject, type Task, type InsertTask, type TimeEntry, type InsertTimeEntry, type RFI, type InsertRFI, type ChangeOrder, type InsertChangeOrder, type Risk, type InsertRisk, type AcumaticaSync, type InsertAcumaticaSync, type UserListFilters, type UserListResponse, type UserWithStats, type UpdateProfile, type NotificationPreferences } from "@shared/schema";
+import { users, projects, tasks, timeEntries, rfis, changeOrders, risks, acumaticaSync, sessions, passwordHistory, auditLogs } from "@shared/schema";
+import { drizzle } from "drizzle-orm/neon-http";
+import { neon } from "@neondatabase/serverless";
+import { eq, and, desc, asc, sql, ilike, count } from "drizzle-orm";
 import { randomUUID } from "crypto";
 import bcrypt from "bcrypt";
+import { hashPassword, validatePassword } from "./auth-utils";
 
 export interface IStorage {
   // Users
@@ -134,32 +139,53 @@ export class MemStorage implements IStorage {
   }
 
   private initializeData() {
-    // Create default admin user
-    const adminUserId = randomUUID();
-    // Hash the password "admin" for demo purposes
-    const hashedPassword = bcrypt.hashSync("admin", 10);
-    const adminUser: User = {
-      id: adminUserId,
-      username: "admin",
-      hashedPassword: hashedPassword,
-      email: "admin@electroproject.com",
-      role: "admin",
-      firstName: "John",
-      lastName: "Smith",
-      emailVerified: true,
-      emailVerificationToken: null,
-      passwordResetToken: null,
-      passwordResetExpires: null,
-      lastLoginAt: null,
-      loginAttempts: 0,
-      lockedUntil: null,
-      isActive: true,
-      twoFactorSecret: null,
-      twoFactorEnabled: false,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-    this.users.set(adminUser.id, adminUser);
+    // SECURITY: Only create sample data in development with explicit bootstrap
+    const shouldBootstrap = process.env.ADMIN_BOOTSTRAP === 'true';
+    const initialPassword = process.env.ADMIN_INITIAL_PASSWORD;
+    const isProduction = process.env.NODE_ENV === 'production';
+    
+    // Block dangerous bootstrap in production
+    if (isProduction && shouldBootstrap) {
+      if (!initialPassword || initialPassword.length < 12) {
+        throw new Error("SECURITY: Cannot bootstrap admin in production without strong ADMIN_INITIAL_PASSWORD (min 12 chars)");
+      }
+      const commonPasswords = ['admin', 'password', '123456', 'changeme', 'default'];
+      if (commonPasswords.some(pwd => initialPassword.toLowerCase().includes(pwd))) {
+        throw new Error("SECURITY: ADMIN_INITIAL_PASSWORD cannot contain common words in production");
+      }
+    }
+    
+    // Only create admin if explicitly requested
+    if (shouldBootstrap && initialPassword) {
+      const adminUserId = randomUUID();
+      const hashedPassword = bcrypt.hashSync(initialPassword, 12); // Higher rounds for security
+      const adminUser: User = {
+        id: adminUserId,
+        username: "admin",
+        hashedPassword: hashedPassword,
+        email: process.env.ADMIN_EMAIL || "admin@company.com",
+        role: "admin",
+        firstName: "System",
+        lastName: "Administrator",
+        emailVerified: false, // Force email verification
+        emailVerificationToken: null,
+        passwordResetToken: null,
+        passwordResetExpires: null,
+        lastLoginAt: null,
+        loginAttempts: 0,
+        lockedUntil: null,
+        isActive: true,
+        twoFactorSecret: null,
+        twoFactorEnabled: false,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      this.users.set(adminUser.id, adminUser);
+      
+      console.warn(`⚠️  SECURITY: Bootstrap admin created in ${process.env.NODE_ENV || 'unknown'} mode. Change password immediately!`);
+    } else if (!shouldBootstrap) {
+      console.log("✓ SECURITY: No admin account bootstrapped. Set ADMIN_BOOTSTRAP=true and ADMIN_INITIAL_PASSWORD to create one.");
+    }
 
     // Create sample projects
     const project1Id = randomUUID();
@@ -1277,4 +1303,792 @@ export class MemStorage implements IStorage {
   }
 }
 
-export const storage = new MemStorage();
+// Database Storage Implementation
+class DatabaseStorage implements IStorage {
+  private db: ReturnType<typeof drizzle>;
+  private initialized: boolean = false;
+
+  constructor() {
+    if (!process.env.DATABASE_URL) {
+      throw new Error("DATABASE_URL environment variable is required");
+    }
+    const sql = neon(process.env.DATABASE_URL);
+    this.db = drizzle(sql);
+    this.initializeData();
+  }
+
+  /**
+   * Hash password securely with high bcrypt rounds
+   */
+  private async hashPasswordSecurely(password: string): Promise<string> {
+    return await hashPassword(password);
+  }
+
+  /**
+   * Validate production security - detect and block weak default credentials
+   */
+  private async validateProductionSecurity(): Promise<void> {
+    const isProduction = process.env.NODE_ENV === 'production';
+    
+    try {
+      // Check for existing admin with weak credentials
+      const existingAdmin = await this.db
+        .select()
+        .from(users)
+        .where(eq(users.username, "admin"))
+        .limit(1);
+
+      if (existingAdmin.length > 0) {
+        const adminUser = existingAdmin[0];
+        
+        // Check if admin has weak password (try common weak passwords)
+        const weakPasswords = ['admin', 'password', '123456', 'changeme', 'default', 'test'];
+        for (const weakPwd of weakPasswords) {
+          const isWeak = bcrypt.compareSync(weakPwd, adminUser.hashedPassword);
+          if (isWeak) {
+            const errorMsg = `🚨 CRITICAL SECURITY ALERT: Admin account has weak password '${weakPwd}'. ` +
+              `This is a CRITICAL security vulnerability. ` +
+              `Production startup BLOCKED until password is changed manually.`;
+            
+            console.error(errorMsg);
+            
+            if (isProduction) {
+              throw new Error(`SECURITY: Weak admin password '${weakPwd}' detected in production. Manual intervention required.`);
+            } else {
+              console.warn(`⚠️  DEVELOPMENT WARNING: Change admin password immediately!`);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('SECURITY:')) {
+        // CRITICAL: This is a fatal security issue - always throw to block startup
+        console.error('🚨 FATAL SECURITY ERROR - BLOCKING STARTUP:', error.message);
+        throw error;
+      }
+      // Database connection issues - don't block startup but log warning
+      console.warn('Warning: Could not validate admin security (database connection issue):', error);
+    }
+  }
+
+  private async initializeData() {
+    if (this.initialized) return;
+    
+    try {
+      // SECURITY: Check for dangerous default admin accounts
+      await this.validateProductionSecurity();
+      
+      // SECURITY: Import and run comprehensive admin validation
+      const { validateAllAdminAccounts } = await import('./auth-utils');
+      await validateAllAdminAccounts(async () => {
+        const adminUsers = await this.db
+          .select()
+          .from(users)
+          .where(eq(users.role, "admin"));
+        return adminUsers;
+      });
+      
+      // Only bootstrap admin if explicitly requested and in development/with strong password
+      const shouldBootstrap = process.env.ADMIN_BOOTSTRAP === 'true';
+      const initialPassword = process.env.ADMIN_INITIAL_PASSWORD;
+      const isProduction = process.env.NODE_ENV === 'production';
+      
+      // Check if admin user already exists
+      const existingAdmin = await this.db
+        .select()
+        .from(users)
+        .where(eq(users.username, "admin"))
+        .limit(1);
+
+      if (existingAdmin.length === 0 && shouldBootstrap) {
+        // Validate bootstrap conditions
+        if (isProduction && !initialPassword) {
+          throw new Error("SECURITY: Cannot bootstrap admin in production without ADMIN_INITIAL_PASSWORD environment variable");
+        }
+        
+        if (!initialPassword || initialPassword.length < 12) {
+          throw new Error("SECURITY: ADMIN_INITIAL_PASSWORD must be at least 12 characters long");
+        }
+        
+        // Additional security checks for production
+        if (isProduction) {
+          const commonPasswords = ['admin', 'password', '123456', 'changeme', 'default'];
+          if (commonPasswords.some(pwd => initialPassword.toLowerCase().includes(pwd))) {
+            throw new Error("SECURITY: ADMIN_INITIAL_PASSWORD cannot contain common words like 'admin' or 'password'");
+          }
+        }
+        
+        console.warn(`⚠️  SECURITY: Creating bootstrap admin account. Environment: ${process.env.NODE_ENV || 'unknown'}`);
+        
+        // Create admin user with strong password
+        const hashedPassword = await this.hashPasswordSecurely(initialPassword);
+        const adminUser: InsertUser = {
+          username: "admin",
+          hashedPassword: hashedPassword,
+          email: process.env.ADMIN_EMAIL || "admin@company.com",
+          role: "admin",
+          firstName: "System",
+          lastName: "Administrator",
+          emailVerified: false, // Force email verification
+          isActive: true,
+          twoFactorEnabled: false,
+          // Force password change on first login
+          passwordResetToken: null,
+          passwordResetExpires: null,
+        };
+        await this.db.insert(users).values(adminUser);
+        
+        // Log security event
+        console.warn(`⚠️  SECURITY: Bootstrap admin account created. CHANGE PASSWORD IMMEDIATELY!`);
+        if (isProduction) {
+          console.error(`🚨 PRODUCTION ALERT: Admin account created in production! Review security immediately.`);
+        }
+        
+        // Get the created admin user
+        const [createdAdmin] = await this.db
+          .select()
+          .from(users)
+          .where(eq(users.username, "admin"))
+          .limit(1);
+
+        if (createdAdmin) {
+          // Create sample projects
+          const sampleProjects = [
+            {
+              projectCode: "ICP-2024-001",
+              name: "Industrial Control Panel Upgrade",
+              description: "Upgrade existing control panel systems with modern PLC and HMI interfaces",
+              clientName: "Manufacturing Corp",
+              clientContact: "Mike Johnson",
+              status: "active",
+              health: "on-track",
+              progress: "78",
+              budgetAmount: "500000",
+              actualAmount: "485000",
+              startDate: "2024-01-15",
+              endDate: "2024-03-15",
+              dueDate: "2024-03-15",
+              projectType: "industrial-control",
+              acumaticaId: "ACU-001",
+            },
+            {
+              projectCode: "WEI-2024-002",
+              name: "Warehouse Electrical Installation",
+              description: "Complete electrical installation for new warehouse facility",
+              clientName: "Logistics Solutions",
+              clientContact: "Sarah Wilson",
+              status: "active",
+              health: "at-risk",
+              progress: "45",
+              budgetAmount: "315000",
+              actualAmount: "328000",
+              startDate: "2024-02-01",
+              endDate: "2024-04-30",
+              dueDate: "2024-04-02",
+              projectType: "warehouse-electrical",
+              acumaticaId: "ACU-002",
+            },
+            {
+              projectCode: "HCS-2024-003",
+              name: "HVAC Control System Retrofit",
+              description: "Retrofit existing HVAC controls with smart building automation",
+              clientName: "Office Complex LLC",
+              clientContact: "David Chen",
+              status: "active",
+              health: "on-track",
+              progress: "92",
+              budgetAmount: "220000",
+              actualAmount: "195000",
+              startDate: "2023-12-01",
+              endDate: "2024-02-28",
+              dueDate: "2024-02-28",
+              projectType: "hvac-control",
+              acumaticaId: "ACU-003",
+            }
+          ];
+
+          await this.db.insert(projects).values(sampleProjects);
+          
+          // Get created projects for creating tasks
+          const createdProjects = await this.db.select().from(projects);
+          const project1 = createdProjects.find(p => p.projectCode === "ICP-2024-001");
+          const project2 = createdProjects.find(p => p.projectCode === "WEI-2024-002");
+          
+          if (project1 && project2) {
+            // Create sample tasks
+            const sampleTasks = [
+              {
+                projectId: project1.id,
+                name: "Site Survey and Assessment",
+                description: "Conduct thorough site survey and existing system assessment",
+                status: "completed",
+                priority: "high",
+                progress: "100",
+                estimatedHours: "40",
+                actualHours: "38",
+                budgetAmount: "8000",
+                actualAmount: "7600",
+                startDate: "2024-01-15",
+                endDate: "2024-01-19",
+                dueDate: "2024-01-19",
+                assignedTo: createdAdmin.id,
+                taskCode: "ICP-001-01",
+                level: 1,
+                sortOrder: 1,
+              },
+              {
+                projectId: project1.id,
+                name: "PLC Programming",
+                description: "Program new Allen-Bradley PLC with updated control logic",
+                status: "in-progress",
+                priority: "critical",
+                progress: "65",
+                estimatedHours: "80",
+                actualHours: "52",
+                budgetAmount: "16000",
+                actualAmount: "10400",
+                startDate: "2024-02-01",
+                endDate: "2024-02-20",
+                dueDate: "2024-02-20",
+                assignedTo: createdAdmin.id,
+                taskCode: "ICP-001-02",
+                level: 1,
+                sortOrder: 2,
+              },
+              {
+                projectId: project2.id,
+                name: "Electrical Panel Installation",
+                description: "Install main electrical distribution panels",
+                status: "not-started",
+                priority: "high",
+                progress: "0",
+                estimatedHours: "60",
+                actualHours: "0",
+                budgetAmount: "12000",
+                actualAmount: "0",
+                startDate: "2024-03-01",
+                endDate: "2024-03-10",
+                dueDate: "2024-03-10",
+                assignedTo: createdAdmin.id,
+                taskCode: "WEI-002-01",
+                level: 1,
+                sortOrder: 1,
+              }
+            ];
+
+            await this.db.insert(tasks).values(sampleTasks);
+          }
+        }
+      }
+      this.initialized = true;
+    } catch (error) {
+      console.error("Failed to initialize database:", error);
+      throw error;
+    }
+  }
+
+  // Users
+  async getUser(id: string): Promise<User | undefined> {
+    const result = await this.db.select().from(users).where(eq(users.id, id)).limit(1);
+    return result[0];
+  }
+
+  async getUserByUsername(username: string): Promise<User | undefined> {
+    const result = await this.db.select().from(users).where(eq(users.username, username)).limit(1);
+    return result[0];
+  }
+
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const result = await this.db.select().from(users).where(eq(users.email, email)).limit(1);
+    return result[0];
+  }
+
+  async createUser(user: InsertUser): Promise<User> {
+    const [created] = await this.db.insert(users).values(user).returning();
+    return created;
+  }
+
+  async updateUserPassword(id: string, hashedPassword: string): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ hashedPassword, updatedAt: new Date() })
+      .where(eq(users.id, id));
+    return true;
+  }
+
+  async updateUserEmailVerification(id: string, verified: boolean): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ emailVerified: verified, emailVerificationToken: null, updatedAt: new Date() })
+      .where(eq(users.id, id));
+    return true;
+  }
+
+  async updateUserLoginAttempts(id: string, attempts: number, lockedUntil?: Date): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ loginAttempts: attempts, lockedUntil, updatedAt: new Date() })
+      .where(eq(users.id, id));
+    return true;
+  }
+
+  async updateUserLastLogin(id: string): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ lastLoginAt: new Date(), updatedAt: new Date() })
+      .where(eq(users.id, id));
+    return true;
+  }
+
+  async updateUserProfile(id: string, profile: UpdateProfile): Promise<User | undefined> {
+    const [updated] = await this.db.update(users)
+      .set({ ...profile, updatedAt: new Date() })
+      .where(eq(users.id, id))
+      .returning();
+    return updated;
+  }
+
+  async updateUserRole(id: string, role: string): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ role, updatedAt: new Date() })
+      .where(eq(users.id, id));
+    return true;
+  }
+
+  async updateUserStatus(id: string, isActive: boolean): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ isActive, updatedAt: new Date() })
+      .where(eq(users.id, id));
+    return true;
+  }
+
+  async getUsersWithFilters(filters: UserListFilters): Promise<UserListResponse> {
+    let query = this.db.select().from(users);
+    
+    // Apply filters
+    const conditions: any[] = [];
+    
+    if (filters.search) {
+      conditions.push(
+        sql`${users.username} ILIKE ${`%${filters.search}%`} OR ${users.email} ILIKE ${`%${filters.search}%`} OR ${users.firstName} ILIKE ${`%${filters.search}%`} OR ${users.lastName} ILIKE ${`%${filters.search}%`}`
+      );
+    }
+    
+    if (filters.role) {
+      conditions.push(eq(users.role, filters.role));
+    }
+    
+    if (filters.status) {
+      conditions.push(eq(users.isActive, filters.status === 'active'));
+    }
+    
+    if (filters.emailVerified !== undefined) {
+      conditions.push(eq(users.emailVerified, filters.emailVerified));
+    }
+    
+    if (conditions.length > 0) {
+      query = query.where(and(...conditions)) as any;
+    }
+    
+    // Get total count
+    const countQuery = this.db.select({ count: count() }).from(users);
+    if (conditions.length > 0) {
+      countQuery.where(and(...conditions));
+    }
+    const [{ count: totalCount }] = await countQuery;
+    
+    // Apply pagination
+    const offset = (filters.page - 1) * filters.limit;
+    const result = await query.limit(filters.limit).offset(offset);
+    
+    return {
+      users: result.map(user => {
+        const { hashedPassword, emailVerificationToken, passwordResetToken, passwordResetExpires, twoFactorSecret, loginAttempts, lockedUntil, ...publicUser } = user;
+        return publicUser;
+      }),
+      totalCount,
+      page: filters.page,
+      limit: filters.limit,
+      totalPages: Math.ceil(totalCount / filters.limit)
+    };
+  }
+
+  async getUserSessions(userId: string): Promise<Session[]> {
+    return await this.db.select().from(sessions).where(eq(sessions.userId, userId));
+  }
+
+  async getAuditLogsByUser(userId: string, limit?: number): Promise<AuditLog[]> {
+    let query = this.db.select().from(auditLogs)
+      .where(eq(auditLogs.userId, userId))
+      .orderBy(desc(auditLogs.createdAt));
+    
+    if (limit) {
+      query = query.limit(limit) as any;
+    }
+    
+    return await query;
+  }
+
+  // Token Management
+  async setPasswordResetToken(userId: string, token: string, expires: Date): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ passwordResetToken: token, passwordResetExpires: expires, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+    return true;
+  }
+
+  async clearPasswordResetToken(userId: string): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ passwordResetToken: null, passwordResetExpires: null, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+    return true;
+  }
+
+  async getUserByPasswordResetToken(token: string): Promise<User | undefined> {
+    const result = await this.db.select().from(users)
+      .where(and(
+        eq(users.passwordResetToken, token),
+        sql`${users.passwordResetExpires} > NOW()`
+      ))
+      .limit(1);
+    return result[0];
+  }
+
+  async setEmailVerificationToken(userId: string, token: string): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ emailVerificationToken: token, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+    return true;
+  }
+
+  async clearEmailVerificationToken(userId: string): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ emailVerificationToken: null, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+    return true;
+  }
+
+  async getUserByEmailVerificationToken(token: string): Promise<User | undefined> {
+    const result = await this.db.select().from(users)
+      .where(eq(users.emailVerificationToken, token))
+      .limit(1);
+    return result[0];
+  }
+
+  // Two-Factor Authentication
+  async setTwoFactorSecret(userId: string, secret: string): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ twoFactorSecret: secret, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+    return true;
+  }
+
+  async clearTwoFactorSecret(userId: string): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ twoFactorSecret: null, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+    return true;
+  }
+
+  async setTwoFactorEnabled(userId: string, enabled: boolean): Promise<boolean> {
+    const result = await this.db.update(users)
+      .set({ twoFactorEnabled: enabled, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+    return true;
+  }
+
+  // Session Management
+  async createSession(session: InsertSession): Promise<Session> {
+    const [created] = await this.db.insert(sessions).values(session).returning();
+    return created;
+  }
+
+  async getSessionByToken(token: string): Promise<Session | undefined> {
+    const result = await this.db.select().from(sessions)
+      .where(and(
+        eq(sessions.sessionToken, token),
+        eq(sessions.isActive, true),
+        sql`${sessions.expiresAt} > NOW()`
+      ))
+      .limit(1);
+    return result[0];
+  }
+
+  async updateSessionLastAccess(sessionId: string): Promise<boolean> {
+    const result = await this.db.update(sessions)
+      .set({ lastAccessedAt: new Date(), updatedAt: new Date() })
+      .where(eq(sessions.id, sessionId));
+    return true;
+  }
+
+  async revokeSession(sessionId: string): Promise<boolean> {
+    const result = await this.db.update(sessions)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(sessions.id, sessionId));
+    return true;
+  }
+
+  async revokeAllUserSessions(userId: string): Promise<number> {
+    const result = await this.db.update(sessions)
+      .set({ isActive: false, updatedAt: new Date() })
+      .where(eq(sessions.userId, userId));
+    return 0; // Drizzle doesn't return affected rows count easily
+  }
+
+  // Password History
+  async addPasswordHistory(passwordHistory: InsertPasswordHistory): Promise<PasswordHistory> {
+    const [created] = await this.db.insert(passwordHistory).values(passwordHistory).returning();
+    return created;
+  }
+
+  async checkPasswordReuse(userId: string, hashedPassword: string, limit: number): Promise<boolean> {
+    const recentPasswords = await this.db.select().from(passwordHistory)
+      .where(eq(passwordHistory.userId, userId))
+      .orderBy(desc(passwordHistory.createdAt))
+      .limit(limit);
+    
+    for (const oldPassword of recentPasswords) {
+      if (bcrypt.compareSync(hashedPassword, oldPassword.hashedPassword)) {
+        return true; // Password was reused
+      }
+    }
+    return false; // Password not reused
+  }
+
+  // Audit Logs
+  async addAuditLog(auditLog: InsertAuditLog): Promise<AuditLog> {
+    const [created] = await this.db.insert(auditLogs).values(auditLog).returning();
+    return created;
+  }
+
+  // Notification Preferences (stored as JSON in user profile for now)
+  async getUserNotificationPreferences(userId: string): Promise<NotificationPreferences | undefined> {
+    // For now, return default preferences - could be extended to separate table
+    return {
+      emailNotifications: true,
+      projectUpdates: true,
+      taskReminders: true,
+      securityAlerts: true
+    };
+  }
+
+  async updateUserNotificationPreferences(userId: string, preferences: NotificationPreferences): Promise<boolean> {
+    // For now, just return true - could be extended to separate table
+    return true;
+  }
+
+  // Projects
+  async getProjects(): Promise<Project[]> {
+    return await this.db.select().from(projects).orderBy(asc(projects.createdAt));
+  }
+
+  async getProject(id: string): Promise<Project | undefined> {
+    const result = await this.db.select().from(projects).where(eq(projects.id, id)).limit(1);
+    return result[0];
+  }
+
+  async createProject(project: InsertProject): Promise<Project> {
+    const [created] = await this.db.insert(projects).values(project).returning();
+    return created;
+  }
+
+  async updateProject(id: string, project: Partial<InsertProject>): Promise<Project | undefined> {
+    const [updated] = await this.db.update(projects)
+      .set({ ...project, updatedAt: new Date() })
+      .where(eq(projects.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteProject(id: string): Promise<boolean> {
+    const result = await this.db.delete(projects).where(eq(projects.id, id));
+    return true;
+  }
+
+  // Tasks
+  async getTasks(): Promise<Task[]> {
+    return await this.db.select().from(tasks).orderBy(asc(tasks.sortOrder));
+  }
+
+  async getTasksByProject(projectId: string): Promise<Task[]> {
+    return await this.db.select().from(tasks)
+      .where(eq(tasks.projectId, projectId))
+      .orderBy(asc(tasks.sortOrder));
+  }
+
+  async getTask(id: string): Promise<Task | undefined> {
+    const result = await this.db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+    return result[0];
+  }
+
+  async createTask(task: InsertTask): Promise<Task> {
+    const [created] = await this.db.insert(tasks).values(task).returning();
+    return created;
+  }
+
+  async updateTask(id: string, task: Partial<InsertTask>): Promise<Task | undefined> {
+    const [updated] = await this.db.update(tasks)
+      .set({ ...task, updatedAt: new Date() })
+      .where(eq(tasks.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteTask(id: string): Promise<boolean> {
+    const result = await this.db.delete(tasks).where(eq(tasks.id, id));
+    return true;
+  }
+
+  // Time Entries
+  async getTimeEntries(): Promise<TimeEntry[]> {
+    return await this.db.select().from(timeEntries).orderBy(desc(timeEntries.date));
+  }
+
+  async getTimeEntriesByProject(projectId: string): Promise<TimeEntry[]> {
+    return await this.db.select().from(timeEntries)
+      .where(eq(timeEntries.projectId, projectId))
+      .orderBy(desc(timeEntries.date));
+  }
+
+  async getTimeEntriesByUser(userId: string): Promise<TimeEntry[]> {
+    return await this.db.select().from(timeEntries)
+      .where(eq(timeEntries.userId, userId))
+      .orderBy(desc(timeEntries.date));
+  }
+
+  async createTimeEntry(timeEntry: InsertTimeEntry): Promise<TimeEntry> {
+    const [created] = await this.db.insert(timeEntries).values(timeEntry).returning();
+    return created;
+  }
+
+  async updateTimeEntry(id: string, timeEntry: Partial<InsertTimeEntry>): Promise<TimeEntry | undefined> {
+    const [updated] = await this.db.update(timeEntries)
+      .set(timeEntry)
+      .where(eq(timeEntries.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteTimeEntry(id: string): Promise<boolean> {
+    const result = await this.db.delete(timeEntries).where(eq(timeEntries.id, id));
+    return true;
+  }
+
+  // RFIs
+  async getRfis(): Promise<RFI[]> {
+    return await this.db.select().from(rfis).orderBy(desc(rfis.submittedDate));
+  }
+
+  async getRfisByProject(projectId: string): Promise<RFI[]> {
+    return await this.db.select().from(rfis)
+      .where(eq(rfis.projectId, projectId))
+      .orderBy(desc(rfis.submittedDate));
+  }
+
+  async getRfi(id: string): Promise<RFI | undefined> {
+    const result = await this.db.select().from(rfis).where(eq(rfis.id, id)).limit(1);
+    return result[0];
+  }
+
+  async createRfi(rfi: InsertRFI): Promise<RFI> {
+    const [created] = await this.db.insert(rfis).values(rfi).returning();
+    return created;
+  }
+
+  async updateRfi(id: string, rfi: Partial<InsertRFI>): Promise<RFI | undefined> {
+    const [updated] = await this.db.update(rfis)
+      .set({ ...rfi, updatedAt: new Date() })
+      .where(eq(rfis.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteRfi(id: string): Promise<boolean> {
+    const result = await this.db.delete(rfis).where(eq(rfis.id, id));
+    return true;
+  }
+
+  // Change Orders
+  async getChangeOrders(): Promise<ChangeOrder[]> {
+    return await this.db.select().from(changeOrders).orderBy(desc(changeOrders.submittedDate));
+  }
+
+  async getChangeOrdersByProject(projectId: string): Promise<ChangeOrder[]> {
+    return await this.db.select().from(changeOrders)
+      .where(eq(changeOrders.projectId, projectId))
+      .orderBy(desc(changeOrders.submittedDate));
+  }
+
+  async getChangeOrder(id: string): Promise<ChangeOrder | undefined> {
+    const result = await this.db.select().from(changeOrders).where(eq(changeOrders.id, id)).limit(1);
+    return result[0];
+  }
+
+  async createChangeOrder(changeOrder: InsertChangeOrder): Promise<ChangeOrder> {
+    const [created] = await this.db.insert(changeOrders).values(changeOrder).returning();
+    return created;
+  }
+
+  async updateChangeOrder(id: string, changeOrder: Partial<InsertChangeOrder>): Promise<ChangeOrder | undefined> {
+    const [updated] = await this.db.update(changeOrders)
+      .set({ ...changeOrder, updatedAt: new Date() })
+      .where(eq(changeOrders.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteChangeOrder(id: string): Promise<boolean> {
+    const result = await this.db.delete(changeOrders).where(eq(changeOrders.id, id));
+    return true;
+  }
+
+  // Risks
+  async getRisks(): Promise<Risk[]> {
+    return await this.db.select().from(risks).orderBy(desc(risks.identifiedDate));
+  }
+
+  async getRisksByProject(projectId: string): Promise<Risk[]> {
+    return await this.db.select().from(risks)
+      .where(eq(risks.projectId, projectId))
+      .orderBy(desc(risks.identifiedDate));
+  }
+
+  async getRisk(id: string): Promise<Risk | undefined> {
+    const result = await this.db.select().from(risks).where(eq(risks.id, id)).limit(1);
+    return result[0];
+  }
+
+  async createRisk(risk: InsertRisk): Promise<Risk> {
+    const [created] = await this.db.insert(risks).values(risk).returning();
+    return created;
+  }
+
+  async updateRisk(id: string, risk: Partial<InsertRisk>): Promise<Risk | undefined> {
+    const [updated] = await this.db.update(risks)
+      .set({ ...risk, updatedAt: new Date() })
+      .where(eq(risks.id, id))
+      .returning();
+    return updated;
+  }
+
+  async deleteRisk(id: string): Promise<boolean> {
+    const result = await this.db.delete(risks).where(eq(risks.id, id));
+    return true;
+  }
+
+  // Acumatica Sync
+  async getAcumaticaSyncs(): Promise<AcumaticaSync[]> {
+    return await this.db.select().from(acumaticaSync).orderBy(desc(acumaticaSync.startedAt));
+  }
+
+  async createAcumaticaSync(sync: InsertAcumaticaSync): Promise<AcumaticaSync> {
+    const [created] = await this.db.insert(acumaticaSync).values(sync).returning();
+    return created;
+  }
+
+  async updateAcumaticaSync(id: string, sync: Partial<InsertAcumaticaSync>): Promise<AcumaticaSync | undefined> {
+    const [updated] = await this.db.update(acumaticaSync)
+      .set(sync)
+      .where(eq(acumaticaSync.id, id))
+      .returning();
+    return updated;
+  }
+}
+
+export const storage = new DatabaseStorage();

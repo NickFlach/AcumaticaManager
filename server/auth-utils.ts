@@ -5,9 +5,9 @@ import rateLimit from "express-rate-limit";
 import nodemailer from "nodemailer";
 import validator from "validator";
 
-// Environment variables with defaults
-const JWT_SECRET = process.env.JWT_SECRET || "your-super-secure-jwt-secret-change-in-production";
-const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || "your-super-secure-refresh-secret-change-in-production";
+// Environment variables with secure defaults
+const JWT_SECRET = process.env.JWT_SECRET || generateSecureSecret();
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || generateSecureSecret();
 // Convert string durations to seconds for JWT compatibility
 const JWT_ACCESS_EXPIRY = process.env.JWT_ACCESS_EXPIRY ? 
   (process.env.JWT_ACCESS_EXPIRY.endsWith('m') ? 
@@ -55,30 +55,249 @@ function escapeHtml(text: string): string {
 }
 
 /**
- * Validate production environment security settings
+ * Generate a secure secret for JWT if not provided
+ */
+function generateSecureSecret(): string {
+  return crypto.randomBytes(64).toString('hex');
+}
+
+/**
+ * Enhanced production environment security validation
+ * Called on module load to validate critical security settings
  */
 function validateProductionSecurity(): void {
   const isProduction = process.env.NODE_ENV === "production";
+  const isDevelopment = process.env.NODE_ENV === "development";
+  
+  // Always validate critical environment variables
+  if (!process.env.DATABASE_URL) {
+    throw new Error("DATABASE_URL environment variable is required for database connectivity.");
+  }
   
   if (isProduction) {
-    // Check JWT secrets are not defaults
-    if (JWT_SECRET === "your-super-secure-jwt-secret-change-in-production") {
-      throw new Error("Production environment detected but JWT_SECRET is using default value. Set a secure JWT_SECRET environment variable.");
+    // Check JWT secrets are properly configured
+    if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+      throw new Error("Production environment detected but JWT_SECRET is not configured or too short. Set a secure JWT_SECRET environment variable (minimum 32 characters).");
     }
     
-    if (JWT_REFRESH_SECRET === "your-super-secure-refresh-secret-change-in-production") {
-      throw new Error("Production environment detected but JWT_REFRESH_SECRET is using default value. Set a secure JWT_REFRESH_SECRET environment variable.");
+    if (!process.env.JWT_REFRESH_SECRET || process.env.JWT_REFRESH_SECRET.length < 32) {
+      throw new Error("Production environment detected but JWT_REFRESH_SECRET is not configured or too short. Set a secure JWT_REFRESH_SECRET environment variable (minimum 32 characters).");
     }
     
-    // Check email configuration
+    // Check email configuration for production
     if (!EMAIL_USER || !EMAIL_PASS) {
-      throw new Error("Production environment detected but email credentials (EMAIL_USER and EMAIL_PASS) are not configured. Email functionality is required in production.");
+      console.warn("Production environment detected but email credentials (EMAIL_USER and EMAIL_PASS) are not configured. Email functionality may not work.");
     }
+    
+    // Validate APP_URL is HTTPS in production
+    if (!APP_URL.startsWith('https://')) {
+      console.warn("Production environment detected but APP_URL does not use HTTPS. This is a security risk.");
+    }
+    
+    // Ensure secure cookie settings are enforced
+    console.log("✓ Production security validation passed");
+  } else if (isDevelopment) {
+    // Development warnings
+    if (!process.env.JWT_SECRET) {
+      console.warn("⚠️  Development: JWT_SECRET not set, using generated secret. Set environment variable for consistency.");
+    }
+    if (!process.env.JWT_REFRESH_SECRET) {
+      console.warn("⚠️  Development: JWT_REFRESH_SECRET not set, using generated secret. Set environment variable for consistency.");
+    }
+    console.log("✓ Development environment validated");
+  }
+  
+  // Always validate admin bootstrap security regardless of environment
+  try {
+    validateAdminSecurity();
+  } catch (error) {
+    // In production, admin security failures should be fatal
+    if (process.env.NODE_ENV === 'production' && error instanceof Error && error.message.includes('SECURITY:')) {
+      console.error('🚨 FATAL SECURITY ERROR:', error.message);
+      throw error; // Block startup in production
+    }
+    
+    // Don't block module loading in development, but log the warning
+    console.warn('Admin security validation warning:', error);
   }
 }
 
 // Run validation on module load
 validateProductionSecurity();
+
+// =============================================
+// ADMIN ACCOUNT SECURITY VALIDATION
+// =============================================
+
+/**
+ * Validate that no weak admin accounts exist in the system
+ * This is a critical security check that should be run at startup
+ */
+export function validateAdminSecurity(): void {
+  const isProduction = process.env.NODE_ENV === "production";
+  const isDevelopment = process.env.NODE_ENV === "development";
+  
+  // Check for bootstrap security
+  const shouldBootstrap = process.env.ADMIN_BOOTSTRAP === 'true';
+  const initialPassword = process.env.ADMIN_INITIAL_PASSWORD;
+  
+  if (shouldBootstrap) {
+    console.warn(`⚠️  SECURITY: Admin bootstrap requested in ${process.env.NODE_ENV || 'unknown'} environment`);
+    
+    if (!initialPassword) {
+      throw new Error("SECURITY: ADMIN_BOOTSTRAP=true requires ADMIN_INITIAL_PASSWORD environment variable");
+    }
+    
+    // Validate password strength
+    const passwordValidation = validateAdminPassword(initialPassword);
+    if (!passwordValidation.valid) {
+      throw new Error(`SECURITY: ADMIN_INITIAL_PASSWORD is not strong enough: ${passwordValidation.errors.join(', ')}`);
+    }
+    
+    // Additional checks for production
+    if (isProduction) {
+      if (initialPassword.length < 16) {
+        throw new Error("SECURITY: Production ADMIN_INITIAL_PASSWORD must be at least 16 characters");
+      }
+      
+      // Check for common weak patterns
+      const weakPatterns = [
+        /admin/i, /password/i, /123/i, /abc/i, /qwerty/i,
+        /changeme/i, /default/i, /temp/i, /test/i
+      ];
+      
+      for (const pattern of weakPatterns) {
+        if (pattern.test(initialPassword)) {
+          throw new Error(`SECURITY: Production ADMIN_INITIAL_PASSWORD cannot contain weak patterns`);
+        }
+      }
+      
+      console.error(`🚨 PRODUCTION ALERT: Bootstrap admin account will be created. This should be a one-time operation!`);
+    }
+  } else if (isDevelopment) {
+    console.log("✓ SECURITY: No admin bootstrap requested. Use ADMIN_BOOTSTRAP=true to create admin account.");
+  }
+}
+
+/**
+ * Check if a password matches common weak passwords
+ */
+export function isWeakPassword(password: string): boolean {
+  const weakPasswords = [
+    'admin', 'password', '123456', '12345678', 'qwerty',
+    'abc123', 'password123', 'admin123', 'changeme',
+    'default', 'guest', 'user', 'test', 'demo'
+  ];
+  
+  const lowerPassword = password.toLowerCase();
+  return weakPasswords.some(weak => 
+    lowerPassword === weak || 
+    lowerPassword.includes(weak)
+  );
+}
+
+/**
+ * Enhanced password validation for admin accounts
+ */
+export function validateAdminPassword(password: string): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  
+  // Base password validation
+  const baseValidation = validatePassword(password);
+  if (!baseValidation.valid) {
+    errors.push(...baseValidation.errors);
+  }
+  
+  // Additional admin-specific requirements
+  if (password.length < 12) {
+    errors.push("Admin password must be at least 12 characters long");
+  }
+  
+  if (isWeakPassword(password)) {
+    errors.push("Admin password cannot contain common weak words");
+  }
+  
+  // Check for keyboard patterns
+  const keyboardPatterns = ['qwerty', 'asdf', '1234', 'abcd'];
+  if (keyboardPatterns.some(pattern => password.toLowerCase().includes(pattern))) {
+    errors.push("Admin password cannot contain keyboard patterns");
+  }
+  
+  return {
+    valid: errors.length === 0,
+    errors
+  };
+}
+
+/**
+ * Verify if a given password matches any known weak admin passwords
+ * Used to detect existing weak accounts
+ */
+export async function checkForWeakAdminPassword(hashedPassword: string): Promise<string | null> {
+  const weakPasswords = ['admin', 'password', '123456', 'changeme', 'default', 'test', 'demo', 'qwerty', 'letmein', 'welcome'];
+  
+  for (const weakPwd of weakPasswords) {
+    try {
+      const isMatch = await verifyPassword(weakPwd, hashedPassword);
+      if (isMatch) {
+        return weakPwd;
+      }
+    } catch (error) {
+      // Continue checking other passwords
+    }
+  }
+  
+  return null; // No weak password found
+}
+
+/**
+ * Critical security function - validates all admin accounts for weak passwords
+ * This function MUST be called at startup and WILL block production startup if weak passwords are found
+ */
+export async function validateAllAdminAccounts(getAdminUsers: () => Promise<any[]>): Promise<void> {
+  const isProduction = process.env.NODE_ENV === 'production';
+  
+  try {
+    const adminUsers = await getAdminUsers();
+    
+    for (const user of adminUsers) {
+      if (user.role === 'admin' && user.hashedPassword) {
+        const weakPassword = await checkForWeakAdminPassword(user.hashedPassword);
+        
+        if (weakPassword) {
+          const errorMsg = `🚨 CRITICAL SECURITY ALERT: Admin account '${user.username}' has weak password '${weakPassword}'. ` +
+            `This is a CRITICAL security vulnerability.`;
+          
+          console.error(errorMsg);
+          
+          if (isProduction) {
+            // FATAL: Block production startup immediately
+            throw new Error(`SECURITY: Admin account '${user.username}' has weak password '${weakPassword}'. Production startup BLOCKED until password is changed manually.`);
+          } else {
+            console.warn(`⚠️  DEVELOPMENT WARNING: Admin account '${user.username}' has weak password '${weakPassword}'. Change immediately!`);
+          }
+        }
+      }
+    }
+    
+    if (isProduction && adminUsers.filter(u => u.role === 'admin').length > 0) {
+      console.log(`✓ SECURITY: ${adminUsers.filter(u => u.role === 'admin').length} admin account(s) validated in production`);
+    }
+    
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('SECURITY:')) {
+      // Critical security error - must block startup
+      throw error;
+    }
+    // Non-security errors (database connection etc.) - log but don't block
+    console.warn('Warning: Could not validate admin accounts:', error);
+    
+    // In production, if we can't validate admin accounts, that's also a security concern
+    if (isProduction) {
+      console.error('🚨 PRODUCTION WARNING: Could not validate admin account security. Manual verification recommended.');
+    }
+  }
+}
 
 // =============================================
 // PASSWORD MANAGEMENT
