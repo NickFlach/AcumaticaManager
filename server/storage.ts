@@ -721,7 +721,7 @@ export class MemStorage implements IStorage {
   async getAuditLogsByUser(userId: string, limit: number = 50): Promise<AuditLog[]> {
     return Array.from(this.auditLogs.values())
       .filter(log => log.userId === userId)
-      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .sort((a, b) => (b.createdAt || new Date()).getTime() - (a.createdAt || new Date()).getTime())
       .slice(0, limit);
   }
 
