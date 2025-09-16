@@ -155,9 +155,12 @@ export class MemStorage implements IStorage {
       }
     }
     
+    // Default admin user ID for sample data (will be overridden if bootstrap creates admin)
+    let adminUserId = "default-admin-id";
+    
     // Only create admin if explicitly requested
     if (shouldBootstrap && initialPassword) {
-      const adminUserId = randomUUID();
+      adminUserId = randomUUID();
       const hashedPassword = bcrypt.hashSync(initialPassword, 12); // Higher rounds for security
       const adminUser: User = {
         id: adminUserId,
