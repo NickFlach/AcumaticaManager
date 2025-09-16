@@ -4,6 +4,7 @@ import MetricsCards from "@/components/dashboard/metrics-cards";
 import ProjectHealthChart from "@/components/dashboard/project-health-chart";
 import BudgetChart from "@/components/dashboard/budget-chart";
 import ProjectTable from "@/components/projects/project-table";
+import AuthStatus from "@/components/auth/AuthStatus";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Clock, HelpCircle, RefreshCw, Database, Smartphone, FileSpreadsheet } from "lucide-react";
