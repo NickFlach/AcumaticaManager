@@ -16,7 +16,8 @@ import {
   User,
   Users,
   Shield,
-  LogOut
+  LogOut,
+  FileText
 } from "lucide-react";
 
 const navigation = [
@@ -41,6 +42,10 @@ const adminNavigation = [
 const integrations = [
   { name: "Acumatica Sync", href: "/acumatica-sync", icon: Cloud },
   { name: "Excel Import/Export", href: "/excel-import-export", icon: FileSpreadsheet },
+];
+
+const resources = [
+  { name: "White Paper", href: "/white-paper", icon: FileText },
 ];
 
 // Helper function to get user initials
@@ -147,6 +152,28 @@ export default function Sidebar() {
                     : "text-gray-700 hover:bg-gray-100"
                 )}
                 data-testid={`nav-${item.name.toLowerCase().replace(/ /g, '-')}`}
+              >
+                <item.icon size={20} />
+                <span>{item.name}</span>
+              </a>
+            </Link>
+          );
+        })}
+
+        <div className="border-t border-gray-200 my-4"></div>
+        <p className="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Resources</p>
+        {resources.map((item) => {
+          const isActive = location === item.href;
+          return (
+            <Link key={item.name} href={item.href}>
+              <a
+                className={cn(
+                  "flex items-center space-x-3 px-3 py-2 rounded-lg font-medium transition-colors",
+                  isActive
+                    ? "bg-primary/10 text-primary"
+                    : "text-gray-700 hover:bg-gray-100"
+                )}
+                data-testid={`nav-resource-${item.name.toLowerCase().replace(/ /g, '-')}`}
               >
                 <item.icon size={20} />
                 <span>{item.name}</span>

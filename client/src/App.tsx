@@ -26,6 +26,7 @@ import ResetPasswordPage from "@/pages/auth/reset-password";
 import ProfilePage from "@/pages/profile";
 import AccountSettingsPage from "@/pages/account-settings";
 import AdminUsersPage from "@/pages/admin/users";
+import { WhitePaper } from "@/pages/WhitePaper";
 
 // Protected route wrapper
 function ProtectedRoute({ component: Component, ...props }: { component: any }) {
@@ -223,6 +224,17 @@ function ProtectedAdminUsers(props: any) {
   );
 }
 
+function ProtectedWhitePaper(props: any) {
+  return (
+    <div className="flex h-screen bg-gray-50" data-testid="protected-white-paper">
+      <Sidebar />
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <WhitePaper {...props} />
+      </div>
+    </div>
+  );
+}
+
 function AppRoutes() {
   const { isAuthenticated, isInitializing } = useAuth();
   
@@ -291,6 +303,11 @@ function AppRoutes() {
       {/* Admin Routes */}
       <Route path="/admin/users">
         <AdminRoute component={ProtectedAdminUsers} />
+      </Route>
+      
+      {/* Resources Routes */}
+      <Route path="/white-paper">
+        <ProtectedRoute component={ProtectedWhitePaper} />
       </Route>
       
       {/* Catch all - redirect to login if not authenticated, otherwise not found */}
