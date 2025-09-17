@@ -9,18 +9,42 @@ export function WhitePaper() {
       const response = await fetch('/ElectroProject-Pro-White-Paper.md');
       const markdown = await response.text();
       
-      // Convert markdown to clean text (remove HTML and markdown syntax)
-      const cleanText = markdown
-        .replace(/<[^>]*>/g, '') // Remove HTML tags
-        .replace(/#{1,6}\s/g, '') // Remove markdown headers
-        .replace(/\*\*(.*?)\*\*/g, '$1') // Remove bold formatting
-        .replace(/\*(.*?)\*/g, '$1') // Remove italic formatting
-        .replace(/\[(.*?)\]\(.*?\)/g, '$1') // Remove links, keep text
-        .replace(/`(.*?)`/g, '$1') // Remove code backticks
-        .replace(/\n{3,}/g, '\n\n'); // Normalize line breaks
+      // Convert markdown to properly formatted readable text
+      const readableText = markdown
+        // Convert headers to uppercase and add spacing
+        .replace(/^#{1}\s(.+)/gm, '\n\n$1\n' + '='.repeat(50) + '\n')
+        .replace(/^#{2}\s(.+)/gm, '\n\n$1\n' + '-'.repeat(30) + '\n')
+        .replace(/^#{3}\s(.+)/gm, '\n\n$1:\n')
+        .replace(/^#{4,6}\s(.+)/gm, '\n$1:\n')
+        // Remove markdown bold/italic but keep content
+        .replace(/\*\*([^*]+)\*\*/g, '$1')
+        .replace(/\*([^*]+)\*/g, '$1')
+        // Convert bullet points to readable format
+        .replace(/^-\s/gm, '• ')
+        // Remove markdown links but keep text
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+        // Remove code backticks
+        .replace(/`([^`]+)`/g, '$1')
+        // Clean up horizontal rules
+        .replace(/^---+/gm, '\n' + '='.repeat(60) + '\n')
+        // Clean up multiple line breaks
+        .replace(/\n{4,}/g, '\n\n\n')
+        // Add proper document header
+        .replace(/^/, `ELECTROPROJECT PRO WHITE PAPER
+${'='.repeat(60)}
+
+Transforming Electrical Project Management with Modern Technology Solutions
+
+Document Version: 1.0
+Publication Date: September 2025
+Author: ElectroProject Pro Development Team
+
+${'='.repeat(60)}
+
+`);
       
-      // Create a blob with the clean text content
-      const blob = new Blob([cleanText], { type: 'text/plain' });
+      // Create a blob with the formatted text
+      const blob = new Blob([readableText], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       
       // Create download link
