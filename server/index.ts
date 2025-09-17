@@ -1,4 +1,5 @@
 import express, { type Request, Response, NextFunction } from "express";
+import path from "node:path";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 
@@ -73,6 +74,21 @@ app.use((req, res, next) => {
 
   next();
 });
+
+// =============================================
+// STATIC FILE SERVING
+// =============================================
+
+// Serve static files from public directory with correct MIME types
+const publicDir = path.resolve(process.cwd(), 'public');
+app.use(express.static(publicDir, {
+  maxAge: process.env.NODE_ENV === 'production' ? '1d' : 0,
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.txt')) {
+      res.type('text/plain; charset=utf-8');
+    }
+  },
+}));
 
 (async () => {
   const server = await registerRoutes(app);
