@@ -228,7 +228,7 @@ function ProtectedWhitePaper(props: any) {
   return (
     <div className="flex h-screen bg-gray-50" data-testid="protected-white-paper">
       <Sidebar />
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-auto">
         <WhitePaper {...props} />
       </div>
     </div>

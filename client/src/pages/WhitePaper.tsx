@@ -3,15 +3,47 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export function WhitePaper() {
-  const downloadWhitePaper = () => {
-    // Create a download link for the white paper
-    const link = document.createElement('a');
-    link.href = '/ElectroProject-Pro-White-Paper.md';
-    link.download = 'ElectroProject-Pro-White-Paper.md';
-    link.target = '_blank';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const downloadWhitePaper = async () => {
+    try {
+      // Fetch the markdown content
+      const response = await fetch('/ElectroProject-Pro-White-Paper.md');
+      const markdown = await response.text();
+      
+      // Convert markdown to clean text (remove HTML and markdown syntax)
+      const cleanText = markdown
+        .replace(/<[^>]*>/g, '') // Remove HTML tags
+        .replace(/#{1,6}\s/g, '') // Remove markdown headers
+        .replace(/\*\*(.*?)\*\*/g, '$1') // Remove bold formatting
+        .replace(/\*(.*?)\*/g, '$1') // Remove italic formatting
+        .replace(/\[(.*?)\]\(.*?\)/g, '$1') // Remove links, keep text
+        .replace(/`(.*?)`/g, '$1') // Remove code backticks
+        .replace(/\n{3,}/g, '\n\n'); // Normalize line breaks
+      
+      // Create a blob with the clean text content
+      const blob = new Blob([cleanText], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      
+      // Create download link
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'ElectroProject-Pro-White-Paper.txt';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      // Clean up the URL
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error downloading white paper:', error);
+      // Fallback to original method if conversion fails
+      const link = document.createElement('a');
+      link.href = '/ElectroProject-Pro-White-Paper.md';
+      link.download = 'ElectroProject-Pro-White-Paper.md';
+      link.target = '_blank';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
   };
 
   return (
@@ -44,7 +76,7 @@ export function WhitePaper() {
               data-testid="button-download-white-paper"
             >
               <Download className="h-4 w-4" />
-              Download PDF
+              Download White Paper
             </Button>
           </div>
         </CardHeader>
@@ -94,7 +126,7 @@ export function WhitePaper() {
                 </div>
                 <div className="flex items-center gap-2">
                   <FileText className="h-4 w-4 text-gray-400" />
-                  <span>Format: Markdown (MD)</span>
+                  <span>Format: Clean Text (TXT)</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Download className="h-4 w-4 text-gray-400" />
