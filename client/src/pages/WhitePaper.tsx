@@ -3,71 +3,15 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export function WhitePaper() {
-  const downloadWhitePaper = async () => {
-    try {
-      // Fetch the markdown content
-      const response = await fetch('/ElectroProject-Pro-White-Paper.md');
-      const markdown = await response.text();
-      
-      // Convert markdown to properly formatted readable text
-      const readableText = markdown
-        // Convert headers to uppercase and add spacing
-        .replace(/^#{1}\s(.+)/gm, '\n\n$1\n' + '='.repeat(50) + '\n')
-        .replace(/^#{2}\s(.+)/gm, '\n\n$1\n' + '-'.repeat(30) + '\n')
-        .replace(/^#{3}\s(.+)/gm, '\n\n$1:\n')
-        .replace(/^#{4,6}\s(.+)/gm, '\n$1:\n')
-        // Remove markdown bold/italic but keep content
-        .replace(/\*\*([^*]+)\*\*/g, '$1')
-        .replace(/\*([^*]+)\*/g, '$1')
-        // Convert bullet points to readable format
-        .replace(/^-\s/gm, '• ')
-        // Remove markdown links but keep text
-        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-        // Remove code backticks
-        .replace(/`([^`]+)`/g, '$1')
-        // Clean up horizontal rules
-        .replace(/^---+/gm, '\n' + '='.repeat(60) + '\n')
-        // Clean up multiple line breaks
-        .replace(/\n{4,}/g, '\n\n\n')
-        // Add proper document header
-        .replace(/^/, `ELECTROPROJECT PRO WHITE PAPER
-${'='.repeat(60)}
-
-Transforming Electrical Project Management with Modern Technology Solutions
-
-Document Version: 1.0
-Publication Date: September 2025
-Author: ElectroProject Pro Development Team
-
-${'='.repeat(60)}
-
-`);
-      
-      // Create a blob with the formatted text
-      const blob = new Blob([readableText], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      
-      // Create download link
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'ElectroProject-Pro-White-Paper.txt';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      
-      // Clean up the URL
-      URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('Error downloading white paper:', error);
-      // Fallback to original method if conversion fails
-      const link = document.createElement('a');
-      link.href = '/ElectroProject-Pro-White-Paper.md';
-      link.download = 'ElectroProject-Pro-White-Paper.md';
-      link.target = '_blank';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    }
+  const downloadWhitePaper = () => {
+    // Create a download link for the pre-formatted text file
+    const link = document.createElement('a');
+    link.href = '/ElectroProject-Pro-White-Paper.txt';
+    link.download = 'ElectroProject-Pro-White-Paper.txt';
+    link.target = '_blank';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   return (
